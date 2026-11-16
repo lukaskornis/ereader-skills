@@ -168,8 +168,11 @@ function Library:collect(root)
         -- Online lookups wait for extraction: they need its title and author.
         if self:needsExtraction(info) then
             table.insert(to_extract, { filepath = path, cover_specs = self.cover_specs })
-        elseif Covers.wanted(path) then
-            table.insert(to_fetch, { path = path, title = title, author = author, isbn = isbnOf(path) })
+        else
+            local own_cover = info ~= nil and info.has_cover and not info.ignore_cover
+            if Covers.wanted(path, own_cover) then
+                table.insert(to_fetch, { path = path, title = title, author = author, isbn = isbnOf(path), own_cover = own_cover })
+            end
         end
     end
     self.pending_extraction = to_extract
@@ -224,16 +227,17 @@ function Library.timeLeft(path, percent)
     return (1 - percent) * pages * read_time / read_pages
 end
 
---- The online cover when one was saved, else the book's own.
+--- The book's own cover, else the online one; scans the other way round.
 function Library:cover(path)
-    local online = Covers.load(path)
-    if online then return online end
-    if not self.bim then return nil end
-    local info = self.bim:getBookInfo(path, true)
+    if Covers.prefersOnline(path) then
+        local online = Covers.load(path)
+        if online then return online end
+    end
+    local info = self.bim and self.bim:getBookInfo(path, true)
     if info and info.has_cover and not info.ignore_cover then
         return info.cover_bb
     end
-    return nil
+    return Covers.load(path)
 end
 
 return Library

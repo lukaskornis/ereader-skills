@@ -1,10 +1,11 @@
 --[[--
-Online covers from Open Library, shown in place of the book's own cover when found:
-they are usually sharper, and some books have none.
+Online covers from Open Library for books with no cover of their own, and for scanned
+PDFs, whose own cover is usually a photo of a library binding.
 
 Fetched in a subprocess while connected, scaled to the shelf's cover size and saved
 as PNG, one file per book, so the shelf only decodes a small image.
 A book with no online match gets an empty .none marker and is retried after a week.
+A PDF with its own cover is checked once: .scan marks a scan, .own a born-digital PDF.
 --]]--
 
 local Blitbuffer = require("ffi/blitbuffer")
@@ -31,6 +32,10 @@ local MISS_RETRY_SECONDS = 7 * 24 * 3600
 local MAX_REDIRECTS = 4
 -- Open Library's M covers are about 180 px wide, L about 500; the smaller one is cheaper to decode.
 local MEDIUM_MAX_W = 180
+
+local SCAN_TYPES = { djvu = true, djv = true, cbz = true, cbr = true }
+local SCAN_PRODUCERS = { "abbyy", "internet archive", "paper capture", "luratech", "scan", "tesseract", "ocrmypdf", "djvu" }
+local TEXT_CHECK_PAGES = 4
 
 local Covers = {}
 
@@ -80,14 +85,28 @@ local function sameTitle(a, b)
     return a:find(b, 1, true) ~= nil or b:find(a, 1, true) ~= nil
 end
 
-local function searchCoverId(book)
-    local data = get(SEARCH_URL .. "&title=" .. urlEncode(book.title) .. "&author=" .. urlEncode(book.author))
+local function findCoverId(title, author)
+    local url = SEARCH_URL .. "&title=" .. urlEncode(title)
+    if author then url = url .. "&author=" .. urlEncode(author) end
+    local data = get(url)
     if not data then return nil end
     local ok, result = pcall(rapidjson.decode, data)
     local doc = ok and type(result) == "table" and type(result.docs) == "table" and result.docs[1]
     if type(doc) ~= "table" or type(doc.cover_i) ~= "number" or type(doc.title) ~= "string" then return nil end
-    if not sameTitle(doc.title, book.title) then return nil end
+    -- Without an author the search is looser, so only the same title is trusted.
+    local matches = author and sameTitle(doc.title, title)
+        or (not author and normalize(doc.title):gsub("^the ", "") == normalize(title):gsub("^the ", ""))
+    if not matches then return nil end
     return string.format("%d", doc.cover_i)
+end
+
+-- Catalog-style authors ("Doyle, Arthur Conan, Sir, 1859-1930") find nothing, hence the title-only retry.
+local function searchCoverId(book)
+    if book.author then
+        local id = findCoverId(book.title, book.author)
+        if id then return id end
+    end
+    return findCoverId(book.title, nil)
 end
 
 local function download(book, size)
@@ -96,7 +115,6 @@ local function download(book, size)
         local data = get(COVERS_URL .. "isbn/" .. book.isbn .. "-" .. size .. ".jpg?default=false")
         if data then return data end
     end
-    if not book.author then return nil end
     local id = searchCoverId(book)
     if not id then return nil end
     return get(COVERS_URL .. "id/" .. id .. "-" .. size .. ".jpg?default=false")
@@ -126,16 +144,57 @@ local function save(data, file, specs)
     return os.rename(part, file)
 end
 
+local function extension(path)
+    return (path:match("%.([^./]+)$") or ""):lower()
+end
+
+local function touch(file)
+    local f = io.open(file, "w")
+    if f then f:close() end
+end
+
+-- Scans either come from a scanning tool or carry no text layer on their first pages.
+local function isScannedPdf(path)
+    local ok, Mupdf = pcall(require, "ffi/mupdf")
+    if not ok then return false end
+    local opened, doc = pcall(Mupdf.openDocument, path)
+    if not opened or not doc then return false end
+    local scanned = false
+    pcall(function()
+        local meta = doc:getMetadata()
+        local made_by = ((meta.producer or "") .. " " .. (meta.creator or "")):lower()
+        for _, name in ipairs(SCAN_PRODUCERS) do
+            if made_by:find(name, 1, true) then scanned = true return end
+        end
+        for number = 1, math.min(TEXT_CHECK_PAGES, doc:getPages()) do
+            local page = doc:openPage(number)
+            local lines = page:getPageText()
+            page:close()
+            if #lines > 0 then return end
+        end
+        scanned = true
+    end)
+    doc:close()
+    return scanned
+end
+
 local function fetch(book, specs)
     local base = baseName(book.path)
+    if book.own_cover and extension(book.path) == "pdf" and lfs.attributes(base .. ".scan", "mode") ~= "file" then
+        if not isScannedPdf(book.path) then
+            os.remove(base .. ".png")
+            touch(base .. ".own")
+            return
+        end
+        touch(base .. ".scan")
+    end
     local size = specs.max_cover_w <= MEDIUM_MAX_W and "M" or "L"
     local data = download(book, size)
     if data and save(data, base .. ".png", specs) then
         os.remove(base .. ".none")
         return
     end
-    local marker = io.open(base .. ".none", "w")
-    if marker then marker:close() end
+    touch(base .. ".none")
 end
 
 --- The saved online cover for the book, or nil.
@@ -145,9 +204,20 @@ function Covers.load(path)
     return RenderImage:renderImageFile(file, false)
 end
 
---- True when the book has no online cover yet and was not looked up in the last week.
-function Covers.wanted(path)
+--- True when a scan, not a born-digital PDF.
+function Covers.prefersOnline(path)
+    return SCAN_TYPES[extension(path)] or lfs.attributes(baseName(path) .. ".scan", "mode") == "file"
+end
+
+--- True when the book should be looked up online now.
+function Covers.wanted(path, own_cover)
     local base = baseName(path)
+    local ext = extension(path)
+    if own_cover and not SCAN_TYPES[ext] then
+        if ext ~= "pdf" or lfs.attributes(base .. ".own", "mode") == "file" then return false end
+        -- An unchecked PDF goes through the scan check even when an old lookup left a cover.
+        if lfs.attributes(base .. ".scan", "mode") ~= "file" then return true end
+    end
     if lfs.attributes(base .. ".png", "mode") == "file" then return false end
     local missed = lfs.attributes(base .. ".none", "modification")
     return not missed or os.time() - missed > MISS_RETRY_SECONDS
@@ -164,12 +234,12 @@ function Covers.busy()
     return running ~= nil
 end
 
---- Looks up each { path, title, author, isbn } in a subprocess. Returns false when it cannot start.
+--- Looks up each { path, title, author, isbn, own_cover } in a subprocess. Returns false when it cannot start.
 function Covers.fetchInBackground(books, specs)
     if running then return false end
     local wanted = {}
     for _, book in ipairs(books) do
-        if Covers.wanted(book.path) then table.insert(wanted, book) end
+        if Covers.wanted(book.path, book.own_cover) then table.insert(wanted, book) end
     end
     books = wanted
     if #books == 0 then return false end
