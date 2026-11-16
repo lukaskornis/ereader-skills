@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>local.ereader.kindle-push</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HOME__/.local/bin/kindle-push</string>
+    </array>
+    <key>WatchPaths</key>
+    <array>
+        <string>__HOME__/Kindle Inbox</string>
+    </array>
+    <!-- Retries waiting books while the Kindle is asleep or off Wi-Fi. -->
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/kindle-push.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/kindle-push.log</string>
+</dict>
+</plist>

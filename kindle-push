@@ -1,0 +1,73 @@
+#!/bin/bash
+# Sends every file in ~/Kindle Inbox to the Kindle over KOReader's SSH server,
+# then moves it to ~/Kindle Inbox/Sent. Run by the local.ereader.kindle-push LaunchAgent (kindle-push.plist.template).
+set -u
+
+INBOX="$HOME/Kindle Inbox"
+SENT="$INBOX/Sent"
+DEST="/mnt/us/documents"
+PORT=2222
+KEY="$HOME/.ssh/kindle_ed25519"
+IP_CACHE="$HOME/Library/Caches/kindle-push.ip"
+LOCK="$HOME/Library/Caches/kindle-push.lock"
+
+SSH_OPTS=(-i "$KEY" -p "$PORT" -o BatchMode=yes -o ConnectTimeout=5 -o IdentitiesOnly=yes
+          -o HostKeyAlias=kindle -o UserKnownHostsFile="$HOME/.ssh/kindle_known_hosts"
+          -o StrictHostKeyChecking=accept-new)
+
+log() { echo "$(date '+%F %T') $*"; }
+
+shlock -f "$LOCK" -p $$ || exit 0
+trap 'rm -f "$LOCK"' EXIT
+
+pending=()
+now=$(date +%s)
+for f in "$INBOX"/*; do
+    [ -f "$f" ] || continue
+    case "$(basename "$f")" in .*|*.crdownload|*.download|*.part) continue ;; esac
+    # Still being written: the interval run picks it up later.
+    [ $((now - $(stat -f %m "$f"))) -lt 5 ] && continue
+    pending+=("$f")
+done
+[ ${#pending[@]} -eq 0 ] && exit 0
+
+is_kindle() {
+    ssh "${SSH_OPTS[@]}" "root@$1" 'test -d /mnt/us/koreader' 2>/dev/null
+}
+
+find_kindle() {
+    local cached
+    cached=$(cat "$IP_CACHE" 2>/dev/null)
+    if [ -n "$cached" ] && nc -z -G 1 "$cached" "$PORT" 2>/dev/null && is_kindle "$cached"; then
+        echo "$cached"; return 0
+    fi
+    local iface prefix candidates ip
+    iface=$(route -n get default 2>/dev/null | awk '/interface/{print $2}')
+    prefix=$(ipconfig getifaddr "$iface" 2>/dev/null | cut -d. -f1-3)
+    [ -n "$prefix" ] || return 1
+    candidates=$(for i in $(seq 1 254); do
+        (nc -z -G 1 "$prefix.$i" "$PORT" 2>/dev/null && echo "$prefix.$i") &
+    done; wait)
+    for ip in $candidates; do
+        if is_kindle "$ip"; then echo "$ip" > "$IP_CACHE"; echo "$ip"; return 0; fi
+    done
+    return 1
+}
+
+ip=$(find_kindle) || { log "Kindle not reachable; ${#pending[@]} waiting"; exit 0; }
+
+sent=0
+for f in "${pending[@]}"; do
+    name=$(basename "$f")
+    quoted="'$(printf %s "$name" | sed "s/'/'\\\\''/g")'"
+    if ssh "${SSH_OPTS[@]}" "root@$ip" "cat > $DEST/.incoming && mv $DEST/.incoming $DEST/$quoted" < "$f"; then
+        mv -f "$f" "$SENT/"
+        log "sent $name to $ip"
+        sent=$((sent + 1))
+    else
+        log "failed $name to $ip"
+    fi
+done
+
+[ $sent -gt 0 ] && osascript -e "display notification \"$sent book(s) on the Kindle\" with title \"Kindle\"" >/dev/null 2>&1
+exit 0

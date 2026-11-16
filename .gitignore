@@ -1,0 +1,14 @@
+# Third-party installers: downloads/fetch.sh gets them and checks the hashes.
+downloads/*
+!downloads/fetch.sh
+!downloads/SHA256SUMS
+# KOReader source mirror for local reading; downloads/fetch.sh --src recreates it.
+koreader-src/
+__pycache__/
+*.bak*
+*.tar
+.DS_Store
+
+# Personal notes, kept local
+MERGE-CHECKLIST.md
+CHANGELOG.md

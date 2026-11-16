@@ -1,0 +1,1 @@
+menu_item : main : KOReader autostart on/off : cmd_output : 2000 : /bin/sh /mnt/onboard/.adds/koboot/toggle.sh

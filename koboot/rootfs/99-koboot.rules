@@ -1,0 +1,2 @@
+# Boot into KOReader: rcS runs a udev trigger right after starting Nickel; koboot-launch.sh acts on the first event only.
+KERNEL=="mmcblk0", SUBSYSTEM=="block", RUN+="/usr/local/koboot/koboot-launch.sh"
