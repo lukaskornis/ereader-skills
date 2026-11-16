@@ -22,7 +22,7 @@ Then follow [koreader-install.md](koreader-install.md), Kindle part, and keep [k
 Once OTA is blocked (jailbreak step 5), turn airplane mode off.
 
 ## 2b. Kobo: KOReader
-Kobos need no jailbreak. Follow [kobo.md](kobo.md): install KOReader with NickelMenu, then then optionally [koboot](koboot/koboot.md) to boot straight into KOReader.
+Kobos need no jailbreak. Follow [kobo.md](kobo.md): install KOReader with NickelMenu, then optionally [koboot](koboot/koboot.md) to boot straight into KOReader.
 
 ## 3. Connect ink
 1. Start KOReader once (Kindle: open "KOReader" in the library; Kobo: the NickelMenu entry) and join Wi-Fi from its top menu. The first start creates its settings.
