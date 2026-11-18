@@ -9,6 +9,7 @@ KOReader plugin: English word search puzzles. Tools menu > Word search.
 - Easy first: the shortest 40% of a board's words read left to right or top to bottom; the rest go backwards or (when on) diagonal, falling back to any direction only when a crowded board has no room.
 - Decoys: 3 to 6 starts of listed words (3 to 5 letters, never the whole word) sit in free lines. No listed word ever reads twice: placements, decoys and filler that would spell a second copy are undone or re-rolled.
 - Bonus words: 2 theme words hidden on every board but not listed. A stroke snaps to them like a listed word and they get the same line; the header shows "Bonus +N" top right and the win panel "Bonus N of 2". They never count toward solving.
+- Theme collections: every word found, listed or bonus, is collected under its theme. The win panel shows "<Theme> N of 35"; home shows "Themes complete N of 12" once any word is collected.
 - Header: back chevron top left, theme, progress squares.
 - Draw across a word: a pencil line follows the finger. On release the trail vanishes and the stroke snaps to the unfound word whose ends best match it, either way round, forgiving max(1.6, 0.3 × length) cells in total end error.
 - A find gets a thin black line (radius 4% of a cell, letters stay readable) through its letters shaped like the drawn stroke: the stroke is fitted onto the word (`Logic.fitStroke`), its wobble scaled down only as far as needed to stay within 0.22 cells. In the list the word keeps its font and gets a hand-drawn strike, each a different wobble. All found: confetti, SOLVED tiles, time, stars (under 20 s a word 3, under 40 s 2).
@@ -25,6 +26,7 @@ KOReader plugin: English word search puzzles. Tools menu > Word search.
 - `wordsearch_diagonals`, `wordsearch_show_left`: switches, default on. `wordsearch_hide_words`: default off.
 - A found word stores `path`: flat t, d pairs (along, across the word, in cells), up to 24 points.
 - `wordsearch_seen` (set of words) and `wordsearch_seen_count`: unique words found across all games.
+- `wordsearch_themes`: { [theme name] = set of words found }. Missing means nothing collected yet; not seeded from `wordsearch_seen`, which has no theme info.
 
 ## Refresh and latency
 - The page is rendered into an off-screen BB8 frame, then only the part shown is thresholded (< 0xA0 black) and copied to the screen.

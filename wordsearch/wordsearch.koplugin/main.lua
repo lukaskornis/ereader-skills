@@ -116,6 +116,27 @@ local function setting(key, default)
     return v
 end
 
+local function themeWords(name)
+    for _, theme in ipairs(THEMES) do
+        if theme.name == name then return #theme.words end
+    end
+    return 0
+end
+
+local function themeFound(collected, name)
+    local got = 0
+    for _ in pairs(collected[name] or {}) do got = got + 1 end
+    return got
+end
+
+local function themesComplete(collected)
+    local complete = 0
+    for _, theme in ipairs(THEMES) do
+        if themeFound(collected, theme.name) >= #theme.words then complete = complete + 1 end
+    end
+    return complete
+end
+
 local function clock(seconds)
     return string.format("%d:%02d", math.floor(seconds / 60), seconds % 60)
 end
@@ -340,6 +361,12 @@ function WordSearchWidget:paintHome(bb)
             t * 0.32, true)
         y = y + t * 0.55
     end
+    local collected = setting("themes", {})
+    if next(collected) then
+        textCentered(bb, _("Themes complete") .. " " .. themesComplete(collected) .. " " .. _("of") .. " " .. #THEMES,
+            W / 2, y + t * 0.3, t * 0.32, false)
+        y = y + t * 0.55
+    end
     local cs = math.floor(t * 0.45)
     closeIcon(bb, W - m, m, cs)
     self:hit(W - m - t, 0, t + m, t + m, function() self:onClose() end)
@@ -545,6 +572,9 @@ function WordSearchWidget:paintWin(bb)
         textCentered(bb, _("Bonus") .. " " .. Logic.bonusFound(g) .. " " .. _("of") .. " " .. #g.bonus,
             W / 2, y, t * 0.36, true, BLACK)
     end
+    y = y + t * 0.5
+    textCentered(bb, g.theme .. " " .. themeFound(setting("themes", {}), g.theme) .. " " .. _("of") .. " "
+        .. themeWords(g.theme), W / 2, y, t * 0.36, false, BLACK)
 
     local bh = math.floor(t * 0.95)
     local bw = math.floor((pw - 3 * t * 0.5) / 2)
@@ -604,6 +634,13 @@ function WordSearchWidget:found(w)
         seen[w.w] = true
         G_reader_settings:saveSetting("wordsearch_seen", seen)
         G_reader_settings:saveSetting("wordsearch_seen_count", setting("seen_count", 0) + 1)
+    end
+    local collected = setting("themes", {})
+    local theme = collected[g.theme] or {}
+    if not theme[w.w] then
+        theme[w.w] = true
+        collected[g.theme] = theme
+        G_reader_settings:saveSetting("wordsearch_themes", collected)
     end
     if Logic.remaining(g) == 0 then
         g.done = true
