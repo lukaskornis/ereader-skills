@@ -3,11 +3,12 @@
 KOReader plugin: English word search puzzles. Tools menu > Word search.
 
 ## Use
-- Home: Continue (thumbnail of the saved board, theme, size, progress), New puzzle in four sizes, two switches.
+- Home: tile logo (WORD crossed by a hand-drawn line), all-time count of unique words found, Continue (thumbnail, theme, size, one square per word), New puzzle as four plain size buttons, three switches.
 - Sizes: Small 8×8 with 6 words, Medium 11×11 with 10, Big 14×14 with 15, Huge 18×18 with 22.
-- Switches: Diagonal words (new boards place words on all eight lines, else the four straight ones, backwards included) and Show words left (pill and progress bar in the header).
+- Switches: Diagonal words (new boards place words on all eight lines, else the four straight ones, backwards included), Show progress (a row of hollow squares under the theme that fill as words are found), Hide word list (the list then shows only found words).
+- Header: back chevron top left, theme, progress squares.
 - Draw across a word: a pencil line follows the finger. On release the trail vanishes and the stroke snaps to the unfound word whose ends best match it, either way round, forgiving max(1.6, 0.3 × length) cells in total end error.
-- A find gets a thick black line through its letters and a thick strike in the list. All found: confetti, SOLVED tiles, time, stars (under 20 s a word 3, under 40 s 2).
+- A find gets a thick black line through its letters shaped like the drawn stroke: the stroke is fitted onto the word (`Logic.fitStroke`), its wobble scaled down only as far as needed to stay within 0.22 cells. In the list the word keeps its font and gets a hand-drawn strike, each a different wobble. All found: confetti, SOLVED tiles, time, stars (under 20 s a word 3, under 40 s 2).
 - No greys anywhere (owner's call, 2026-11-18): every frame is thresholded to pure black and white, so A2 shows it exactly and nothing needs a flash.
 - Menu goes back home. Closing (✕ on home, or KOReader exit through FlushSettings) saves the board.
 
@@ -18,7 +19,9 @@ KOReader plugin: English word search puzzles. Tools menu > Word search.
 
 ## State
 - `wordsearch_game` in `G_reader_settings`: plain table (size, n, theme, letters, words with ends and found flags, elapsed seconds, done, seed). Saved after every find with a flush, on Menu and on close.
-- `wordsearch_diagonals`, `wordsearch_show_left`: switches, default on.
+- `wordsearch_diagonals`, `wordsearch_show_left`: switches, default on. `wordsearch_hide_words`: default off.
+- A found word stores `path`: flat t, d pairs (along, across the word, in cells), up to 24 points.
+- `wordsearch_seen` (set of words) and `wordsearch_seen_count`: unique words found across all games.
 
 ## Refresh and latency
 - The page is rendered into an off-screen BB8 frame, then only the part shown is thresholded (< 0xA0 black) and copied to the screen.

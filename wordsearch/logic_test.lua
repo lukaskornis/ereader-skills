@@ -62,5 +62,30 @@ for _, x in ipairs(g.words) do x.found = true end
 check(Logic.snap(g, w.c1 - 0.5, w.r1 - 0.5, w.c2 - 0.5, w.r2 - 0.5) == nil, "found word snapped again")
 check(Logic.remaining(g) == 0, "remaining after all found")
 
+-- Fitted strokes: a wobbly, overshooting, backwards stroke keeps its ends on the word's ends and
+-- never wanders further than MAX_WOBBLE off the word's line.
+g = Logic.generate(themes, "big", true, 11)
+for _, w in ipairs(g.words) do
+    local ax, ay, bx, by = w.c1 - 0.5, w.r1 - 0.5, w.c2 - 0.5, w.r2 - 0.5
+    local dx, dy = bx - ax, by - ay
+    local len = math.sqrt(dx * dx + dy * dy)
+    local pts = {}
+    for k = 0, 40 do
+        local t = 1.15 - 1.3 * k / 40
+        local wob = 0.9 * math.sin(k * 0.7)
+        pts[#pts + 1] = { ax + dx * t - dy / len * wob, ay + dy * t + dx / len * wob }
+    end
+    w.path = Logic.fitStroke(pts, w)
+    check(w.path and #w.path <= 48, w.w .. " path size")
+    check(w.path[1] == 0 and w.path[#w.path - 1] == 1, w.w .. " path ends not on word ends")
+    local sp = Logic.strokePoints(w, 0)
+    for _, p in ipairs(sp) do
+        local off = math.abs((p[1] - ax) * dy - (p[2] - ay) * dx) / len
+        check(off <= Logic.MAX_WOBBLE + 1e-3, w.w .. " wanders " .. off)
+    end
+    check(math.abs(sp[1][1] - ax) < 0.3 and math.abs(sp[#sp][1] - bx) < 0.3, w.w .. " path flipped")
+end
+check(Logic.fitStroke({ { 1, 1 }, { 1.1, 1.1 } }, g.words[1]) == nil, "dot made a path")
+
 print(fails == 0 and "PASS" or ("FAILED " .. fails))
 os.exit(fails == 0 and 0 or 1)

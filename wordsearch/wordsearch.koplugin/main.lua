@@ -120,6 +120,21 @@ local function clock(seconds)
     return string.format("%d:%02d", math.floor(seconds / 60), seconds % 60)
 end
 
+-- One square per word, filled once it is found.
+local function progressSquares(bb, x, y, sq, g, color)
+    local done = #g.words - Logic.remaining(g)
+    local gap = math.max(4, math.floor(sq * 0.35))
+    local bw = math.max(2, math.floor(sq * 0.1))
+    for k = 1, #g.words do
+        if k <= done then
+            bb:paintRect(x, y, sq, sq, color)
+        else
+            bb:paintBorder(x, y, sq, sq, bw, color)
+        end
+        x = x + sq + gap
+    end
+end
+
 local WordSearchWidget = InputContainer:extend{
     covers_fullscreen = true,
     is_wordsearch = true,
@@ -271,6 +286,46 @@ local function switch(bb, x, cy, w, on)
     end
 end
 
+-- A hand-drawn looking line from (x1, y1) to (x2, y2): a gentle wobble, its shape picked by `seed`.
+local function scribble(bb, x1, y1, x2, y2, r, amp, seed)
+    local dx, dy = x2 - x1, y2 - y1
+    local len = math.sqrt(dx * dx + dy * dy)
+    local nx, ny = -dy / len, dx / len
+    local steps = 14
+    local px, py = x1, y1
+    for k = 1, steps do
+        local t = k / steps
+        local o = amp * (math.sin(t * 5.1 + 0.4 + seed) * 0.6 + math.sin(t * 11.3 + seed * 1.7) * 0.25) * math.sin(t * math.pi)
+        local x, y = x1 + dx * t + nx * o, y1 + dy * t + ny * o
+        capsule(bb, px, py, x, y, r, BLACK)
+        px, py = x, y
+    end
+end
+
+-- Outlined letter tiles, WORD crossed by a hand-drawn line. Returns the logo's height.
+function WordSearchWidget:paintLogo(bb, top, t)
+    local W = self.dimen.w
+    local tile = math.floor(t * 0.95)
+    local gap = math.floor(tile * 0.1)
+    local function row(word, cy)
+        local x = math.floor(W / 2 - (#word * tile + (#word - 1) * gap) / 2)
+        for i = 1, #word do
+            bb:paintBorder(x, math.floor(cy - tile / 2), tile, tile, math.max(3, math.floor(tile * 0.05)), BLACK,
+                math.floor(tile * 0.16))
+            textCentered(bb, word:sub(i, i), x + tile / 2, cy, tile * 0.6, true)
+            x = x + tile + gap
+        end
+        return x - gap
+    end
+    local cy1 = top + tile / 2
+    local right = row("WORD", cy1)
+    local left = W - right
+    scribble(bb, left - tile * 0.25, cy1 + tile * 0.05, right + tile * 0.25, cy1 - tile * 0.05,
+        math.max(5, tile * 0.07), tile * 0.14, 0)
+    row("SEARCH", cy1 + tile + gap * 2)
+    return tile * 2 + gap * 2
+end
+
 function WordSearchWidget:paintHome(bb)
     local W, H = self.dimen.w, self.dimen.h
     local S = math.min(W, H)
@@ -278,22 +333,21 @@ function WordSearchWidget:paintHome(bb)
     local t = math.floor(math.min((S - 2 * m) / 7.5, H * 0.08))
     local y = m + t / 2
 
-    -- Title: WORD circled like a found word, SEARCH below.
-    local word_w = 4 * t + 3 * math.floor(t * 0.12)
-    local r = math.floor(t * 0.66)
-    capsule(bb, W / 2 - word_w / 2 + t / 2, y + t * 0.1, W / 2 + word_w / 2 - t / 2, y + t * 0.1, r, BLACK)
-    capsule(bb, W / 2 - word_w / 2 + t / 2, y + t * 0.1, W / 2 + word_w / 2 - t / 2, y + t * 0.1, r - 6, WHITE)
-    self:paintTiles(bb, "WORD", W / 2, y + t * 0.1, t)
-    y = y + t * 1.35
-    self:paintTiles(bb, "SEARCH", W / 2, y, t)
+    y = m + self:paintLogo(bb, m, t)
+    local found = setting("seen_count", 0)
+    if found > 0 then
+        textCentered(bb, found .. " " .. (found == 1 and _("word found") or _("words found")), W / 2, y + t * 0.3,
+            t * 0.32, true)
+        y = y + t * 0.55
+    end
     local cs = math.floor(t * 0.45)
     closeIcon(bb, W - m, m, cs)
     self:hit(W - m - t, 0, t + m, t + m, function() self:onClose() end)
-    y = y + t * 0.5 + m
+    y = y + m * 0.6
 
     local g = self.game
     if g and not g.done then
-        local ch = math.floor(t * 2.1)
+        local ch = math.floor(t * 1.7)
         local pad = math.floor(ch * 0.14)
         bb:paintRoundedRect(m, y, W - 2 * m, ch, BLACK, 28)
         local thumb = ch - 2 * pad
@@ -309,51 +363,38 @@ function WordSearchWidget:paintHome(bb)
         end
         miniGrid(bb, m + pad, y + pad, thumb, g.n, function(rr, cc) return found[rr * 100 + cc] end)
         local tx = m + 2 * pad + thumb + pad
-        local total, left = #g.words, Logic.remaining(g)
+        local total = #g.words
         text(bb, _("Continue"), tx, y + ch * 0.27, t * 0.55, true, WHITE)
         text(bb, g.theme .. "  ·  " .. Logic.size(g.size).name, tx, y + ch * 0.53, t * 0.36, false, WHITE)
-        local bw = W - m - pad - tx
-        local by = math.floor(y + ch * 0.76)
-        bb:paintBorder(tx, by, bw, 18, 3, WHITE, 9)
-        bb:paintRoundedRect(tx, by, math.max(18, math.floor(bw * (total - left) / total)), 18, WHITE, 9)
+        local sq = math.floor(math.min(t * 0.24, (W - m - pad - tx) / (total * 1.35)))
+        progressSquares(bb, tx, math.floor(y + ch * 0.8 - sq / 2), sq, g, WHITE)
         self:hit(m, y, W - 2 * m, ch, function() self:startGame() end)
-        y = y + ch + m
+        y = y + ch + m * 0.6
     end
 
     text(bb, _("New puzzle"), m, y + t * 0.3, t * 0.42, true)
-    y = y + t * 0.75
-    local gap = math.floor(m * 0.6)
-    local cw = math.floor((W - 2 * m - gap) / 2)
-    local ch = math.floor(t * 1.6)
-    local diag = setting("diagonals", true)
+    y = y + t * 0.7
+    local gap = math.floor(m * 0.4)
+    local cw = math.floor((W - 2 * m - 3 * gap) / 4)
+    local ch = math.floor(t * 0.95)
     for i, size in ipairs(Logic.SIZES) do
-        local cx = m + ((i - 1) % 2) * (cw + gap)
-        local cy = y + math.floor((i - 1) / 2) * (ch + gap)
-        bb:paintBorder(cx, cy, cw, ch, 4, BLACK, 24)
-        local pad = math.floor(ch * 0.16)
-        local side = ch - 2 * pad
-        local n = size.n
-        local word_row, word_len = math.floor(n / 3), math.floor(n / 2)
-        miniGrid(bb, cx + pad, cy + pad, side, n, function(rr, cc)
-            if rr == word_row and cc >= 2 and cc < 2 + word_len then return true end
-            return diag and rr == cc + math.floor(n / 3) and cc <= word_len
-        end)
-        local tx = cx + 2 * pad + side
-        text(bb, size.name, tx, cy + ch * 0.36, t * 0.5, true)
-        text(bb, n .. "×" .. n .. " · " .. size.words .. " " .. _("words"), tx, cy + ch * 0.68, t * 0.3, false, BLACK)
-        self:hit(cx, cy, cw, ch, function() self:newGame(size.key) end)
+        local cx = m + (i - 1) * (cw + gap)
+        bb:paintBorder(cx, y, cw, ch, 4, BLACK, math.floor(ch / 2))
+        textCentered(bb, size.name, cx + cw / 2, y + ch / 2, t * 0.4, true)
+        self:hit(cx, y, cw, ch, function() self:newGame(size.key) end)
     end
-    y = y + 2 * ch + gap + m
+    y = y + ch + m * 0.8
 
     local rows = {
         { key = "diagonals", label = _("Diagonal words"), default = true },
-        { key = "show_left", label = _("Show words left"), default = true },
+        { key = "show_left", label = _("Show progress"), default = true },
+        { key = "hide_words", label = _("Hide word list"), default = false },
     }
-    local rh = math.floor(t * 0.95)
+    local rh = math.floor(t * 0.75)
     for _, row in ipairs(rows) do
         local on = setting(row.key, row.default)
         text(bb, row.label, m, y + rh / 2, t * 0.4, false)
-        switch(bb, W - m - math.floor(t * 1.15), math.floor(y + rh / 2), math.floor(t * 1.15), on)
+        switch(bb, W - m - math.floor(t), math.floor(y + rh / 2), math.floor(t), on)
         self:hit(0, y, W, rh, function()
             G_reader_settings:saveSetting("wordsearch_" .. row.key, not on)
             UIManager:setDirty(self, "ui")
@@ -371,33 +412,27 @@ function WordSearchWidget:paintGame(bb)
     local W = self.dimen.w
     local header = L.header
 
-    -- Header: back, theme, words left.
-    local hy = header / 2 + L.m / 2
-    local hp = header * 0.42
-    text(bb, "‹", L.m, hy - hp * 0.08, hp * 1.4, true)
-    text(bb, _("Menu"), L.m + hp * 0.7, hy, hp * 0.62, false)
-    self:hit(0, 0, L.m + hp * 3.2, header + L.m / 2, function() self:goHome() end)
-    textCentered(bb, g.theme, W / 2, hy, hp * 0.8, true)
-    local total, left = #g.words, Logic.remaining(g)
+    -- Header: back chevron, theme, one hollow square per word that fills as words are found.
+    local hy = header * 0.4
+    local cs = header * 0.22
+    local cx = L.m + cs * 0.5
+    local pen = math.max(3, math.floor(header * 0.03))
+    capsule(bb, cx + cs * 0.5, hy - cs, cx - cs * 0.5, hy, pen, BLACK)
+    capsule(bb, cx - cs * 0.5, hy, cx + cs * 0.5, hy + cs, pen, BLACK)
+    self:hit(0, 0, L.m + header, header, function() self:goHome() end)
+    textCentered(bb, g.theme, W / 2, hy, header * 0.34, true)
     if setting("show_left", true) then
-        local label = left == 0 and "✓" or (left .. " " .. _("left"))
-        local px = hp * 0.6
-        local pw = textWidth(label, px, true) + px * 1.4
-        local ph = math.floor(px * 1.8)
-        bb:paintRoundedRect(math.floor(W - L.m - pw), math.floor(hy - ph / 2), math.floor(pw), ph, BLACK, math.floor(ph / 2))
-        textCentered(bb, label, W - L.m - pw / 2, hy, px, true, WHITE)
-        -- Progress bar along the header's foot.
-        bb:paintRect(L.m, header + L.m / 2 - 2, W - 2 * L.m, 2, BLACK)
-        bb:paintRect(L.m, header + L.m / 2 - 6, math.floor((W - 2 * L.m) * (total - left) / total), 9, BLACK)
-    else
-        bb:paintRect(L.m, header + L.m / 2 - 2, W - 2 * L.m, 2, BLACK)
+        local total = #g.words
+        local sq = math.floor(math.min(header * 0.24, (W - 2 * L.m) / (total * 1.35)))
+        local row = total * sq + (total - 1) * math.max(4, math.floor(sq * 0.35))
+        progressSquares(bb, math.floor((W - row) / 2), math.floor(header * 0.86 - sq / 2), sq, g, BLACK)
     end
 
     self:paintGrid(bb)
     self:paintWordList(bb)
 end
 
--- Letters, then a thick black line through every found word.
+-- Letters, then a thick black line through every found word, shaped like the stroke that found it.
 function WordSearchWidget:paintGrid(bb)
     local g, L = self.game, self.layout
     local n, cell = g.n, L.cell
@@ -409,26 +444,32 @@ function WordSearchWidget:paintGrid(bb)
         end
     end
     local r = math.max(4, cell * 0.075)
-    local over = cell * 0.32
     for _, w in ipairs(g.words) do
         if w.found then
-            local x1, y1 = self:cellCenter(w.r1, w.c1)
-            local x2, y2 = self:cellCenter(w.r2, w.c2)
-            local dx, dy = x2 - x1, y2 - y1
-            local len = math.sqrt(dx * dx + dy * dy)
-            local ux, uy = dx / len, dy / len
-            capsule(bb, x1 - ux * over, y1 - uy * over, x2 + ux * over, y2 + uy * over, r, BLACK)
+            local pts = Logic.strokePoints(w, 0.32)
+            for j = 2, #pts do
+                capsule(bb, L.gx + pts[j - 1][1] * cell, L.gy + pts[j - 1][2] * cell,
+                    L.gx + pts[j][1] * cell, L.gy + pts[j][2] * cell, r, BLACK)
+            end
         end
     end
 end
 
 function WordSearchWidget:paintWordList(bb)
     local g, area = self.game, self.layout.list
-    local count = #g.words
+    local list = g.words
+    if setting("hide_words", false) then
+        list = {}
+        for _, w in ipairs(g.words) do
+            if w.found then list[#list + 1] = w end
+        end
+        if #list == 0 then return end
+    end
+    local count = #list
     local px, cols, rows, colw
     for size = math.floor(self.layout.cell * 0.6), 18, -2 do
         local maxw = 0
-        for _, w in ipairs(g.words) do maxw = math.max(maxw, textWidth(w.w, size, true)) end
+        for _, w in ipairs(list) do maxw = math.max(maxw, textWidth(w.w, size, true)) end
         colw = maxw + size * 1.6
         cols = math.max(1, math.floor((area.w + size * 1.6) / colw))
         rows = math.ceil(count / cols)
@@ -439,15 +480,14 @@ function WordSearchWidget:paintWordList(bb)
     local block_w = cols * colw - px * 1.6
     local x0 = area.x + math.max(0, (area.w - block_w) / 2)
     local y0 = area.y + math.max(0, (area.h - rows * lh) / 2)
-    for i, w in ipairs(g.words) do
+    for i, w in ipairs(list) do
         local col, row = math.floor((i - 1) / rows), (i - 1) % rows
         local x, cy = x0 + col * colw, y0 + row * lh + lh / 2
+        text(bb, w.w, x, cy, px, true, BLACK)
         if w.found then
-            text(bb, w.w, x, cy, px, false, BLACK)
-            local sw = math.max(4, math.floor(px * 0.14))
-            bb:paintRect(math.floor(x - 6), math.floor(cy - sw / 2), math.floor(textWidth(w.w, px, false) + 12), sw, BLACK)
-        else
-            text(bb, w.w, x, cy, px, true, BLACK)
+            local tw = textWidth(w.w, px, true)
+            local tilt = px * 0.14 * (i % 2 == 0 and 1 or -1)
+            scribble(bb, x - px * 0.2, cy + tilt, x + tw + px * 0.2, cy - tilt, math.max(3, px * 0.08), px * 0.32, i)
         end
     end
 end
@@ -545,6 +585,12 @@ end
 function WordSearchWidget:found(i)
     local g = self.game
     g.words[i].found = true
+    local seen = G_reader_settings:readSetting("wordsearch_seen") or {}
+    if not seen[g.words[i].w] then
+        seen[g.words[i].w] = true
+        G_reader_settings:saveSetting("wordsearch_seen", seen)
+        G_reader_settings:saveSetting("wordsearch_seen_count", setting("seen_count", 0) + 1)
+    end
     if Logic.remaining(g) == 0 then
         g.done = true
         self:tick()
@@ -621,7 +667,7 @@ function WordSearchWidget:onStrokeStart(pos)
         self.stroke = nil
         return false
     end
-    self.stroke = { sx = fx, sy = fy, x = pos.x, y = pos.y }
+    self.stroke = { sx = fx, sy = fy, x = pos.x, y = pos.y, pts = { { fx, fy } } }
     self:pen(pos.x, pos.y, pos.x, pos.y)
     return true
 end
@@ -630,6 +676,7 @@ function WordSearchWidget:onStrokeMove(pos)
     local s = self.stroke
     if not s or not pos then return false end
     s.ex, s.ey = self:toCells(pos)
+    s.pts[#s.pts + 1] = { s.ex, s.ey }
     self:pen(s.x, s.y, pos.x, pos.y)
     s.x, s.y = pos.x, pos.y
     return true
@@ -644,6 +691,8 @@ function WordSearchWidget:onStrokeEnd(pos)
     local i = s.ex and Logic.snap(self.game, s.sx, s.sy, s.ex, s.ey)
     local box = s.box
     if i then
+        if s.ex then s.pts[#s.pts + 1] = { s.ex, s.ey } end
+        self.game.words[i].path = Logic.fitStroke(s.pts, self.game.words[i])
         self:found(i)
         local w = self.game.words[i]
         local L = self.layout

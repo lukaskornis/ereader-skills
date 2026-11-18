@@ -143,4 +143,70 @@ function Logic.snap(game, sx, sy, ex, ey)
     return best
 end
 
+-- How far a fitted stroke may wander off the word's centre line, in cells.
+Logic.MAX_WOBBLE = 0.22
+local PATH_POINTS = 24
+
+-- Fits a drawn stroke (points in cell units, in drawing order) onto word w, keeping its shape: each
+-- point becomes (t along the word from r1,c1 to r2,c2, signed offset d across it). The stroke's own
+-- ends map onto the word's ends, and the wobble is scaled down only as far as needed to stay on the
+-- word. Returns a flat list t1, d1, t2, d2, ...; nil for a stroke too short to have a shape.
+function Logic.fitStroke(pts, w)
+    local n = #pts
+    if n < 2 then return nil end
+    local sx, sy, ex, ey = pts[1][1], pts[1][2], pts[n][1], pts[n][2]
+    local ux, uy = ex - sx, ey - sy
+    local len2 = ux * ux + uy * uy
+    if len2 < 0.09 then return nil end
+    local len = math.sqrt(len2)
+    -- Drawn from the word's far end: walk the word backwards.
+    local ax, ay, bx, by = w.c1 - 0.5, w.r1 - 0.5, w.c2 - 0.5, w.r2 - 0.5
+    local reversed = dist(sx, sy, bx, by) + dist(ex, ey, ax, ay) < dist(sx, sy, ax, ay) + dist(ex, ey, bx, by)
+    local raw, max_d = {}, 0
+    local step = math.max(1, (n - 1) / (PATH_POINTS - 1))
+    local i = 1
+    while true do
+        local k = math.min(n, math.floor(i + 0.5))
+        local px, py = pts[k][1] - sx, pts[k][2] - sy
+        local t = math.max(0, math.min(1, (px * ux + py * uy) / len2))
+        local d = (px * uy - py * ux) / len
+        if reversed then t, d = 1 - t, -d end
+        raw[#raw + 1] = { t, d }
+        max_d = math.max(max_d, math.abs(d))
+        if k == n then break end
+        i = i + step
+    end
+    local scale = max_d > Logic.MAX_WOBBLE and Logic.MAX_WOBBLE / max_d or 1
+    if reversed then
+        local flipped = {}
+        for j = #raw, 1, -1 do flipped[#flipped + 1] = raw[j] end
+        raw = flipped
+    end
+    local out = {}
+    for _, p in ipairs(raw) do
+        out[#out + 1] = math.floor(p[1] * 1000 + 0.5) / 1000
+        out[#out + 1] = math.floor(p[2] * scale * 1000 + 0.5) / 1000
+    end
+    return out
+end
+
+-- Points of a found word's line in cell units, from just before its first letter to just after its
+-- last; follows the saved stroke shape when there is one, else a straight line.
+function Logic.strokePoints(w, over)
+    local ax, ay, bx, by = w.c1 - 0.5, w.r1 - 0.5, w.c2 - 0.5, w.r2 - 0.5
+    local dx, dy = bx - ax, by - ay
+    local len = math.sqrt(dx * dx + dy * dy)
+    local ux, uy = dx / len, dy / len
+    ax, ay, bx, by = ax - ux * over, ay - uy * over, bx + ux * over, by + uy * over
+    dx, dy = bx - ax, by - ay
+    local path = w.path or { 0, 0, 1, 0 }
+    local pts = {}
+    for j = 1, #path - 1, 2 do
+        local t, d = path[j], path[j + 1]
+        -- Normal (-uy, ux) matches fitStroke's sign of d.
+        pts[#pts + 1] = { ax + dx * t - uy * d, ay + dy * t + ux * d }
+    end
+    return pts
+end
+
 return Logic
