@@ -7,6 +7,7 @@ subscription token and returns the reply as an HTML fragment.
   relay.py install          LaunchAgent (starts at login, restarts on crash) + pair every reader
   relay.py pair [DEVICE]    tell a reader the relay address and key (ink eval)
 """
+import getpass
 import json
 import os
 import re
@@ -162,10 +163,11 @@ def login():
         text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\r|\n", "", f.read())
     os.unlink(capture)
     match = re.search(r"sk-ant-oat[A-Za-z0-9_\-]+", text)
-    if not match:
-        die("No token found in the setup-token output.")
+    token = match.group(0) if match else getpass.getpass("Paste the token it printed: ").strip()
+    if not token:
+        die("No token.")
     subprocess.run(["security", "add-generic-password", "-U", "-a", os.environ.get("USER", "me"),
-                    "-s", KEYCHAIN_SERVICE, "-w", match.group(0)], check=True)
+                    "-s", KEYCHAIN_SERVICE, "-w", token], check=True)
     print("Token saved to the keychain.")
 
 
