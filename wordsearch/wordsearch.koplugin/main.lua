@@ -427,12 +427,18 @@ function WordSearchWidget:paintGame(bb)
         local row = total * sq + (total - 1) * math.max(4, math.floor(sq * 0.35))
         progressSquares(bb, math.floor((W - row) / 2), math.floor(header * 0.86 - sq / 2), sq, g, BLACK)
     end
+    local bonus = Logic.bonusFound(g)
+    if bonus > 0 then
+        local label = _("Bonus") .. " +" .. bonus
+        local bpx = header * 0.22
+        text(bb, label, W - L.m - textWidth(label, bpx, true), hy, bpx, true, BLACK)
+    end
 
     self:paintGrid(bb)
     self:paintWordList(bb)
 end
 
--- Letters, then a thick black line through every found word, shaped like the stroke that found it.
+-- Letters, then a thin black line through every found word (bonus too), shaped like the stroke that found it.
 function WordSearchWidget:paintGrid(bb)
     local g, L = self.game, self.layout
     local n, cell = g.n, L.cell
@@ -444,14 +450,17 @@ function WordSearchWidget:paintGrid(bb)
         end
     end
     local r = math.max(2, cell * 0.04)
-    for _, w in ipairs(g.words) do
-        if w.found then
-            local pts = Logic.strokePoints(w, 0.32)
-            for j = 2, #pts do
-                capsule(bb, L.gx + pts[j - 1][1] * cell, L.gy + pts[j - 1][2] * cell,
-                    L.gx + pts[j][1] * cell, L.gy + pts[j][2] * cell, r, BLACK)
-            end
-        end
+    for _, w in ipairs(g.words) do self:paintFoundLine(bb, w, r) end
+    for _, w in ipairs(g.bonus or {}) do self:paintFoundLine(bb, w, r) end
+end
+
+function WordSearchWidget:paintFoundLine(bb, w, r)
+    if not w.found then return end
+    local L, cell = self.layout, self.layout.cell
+    local pts = Logic.strokePoints(w, 0.32)
+    for j = 2, #pts do
+        capsule(bb, L.gx + pts[j - 1][1] * cell, L.gy + pts[j - 1][2] * cell,
+            L.gx + pts[j][1] * cell, L.gy + pts[j][2] * cell, r, BLACK)
     end
 end
 
@@ -531,6 +540,11 @@ function WordSearchWidget:paintWin(bb)
     y = y + t * 0.8
     textCentered(bb, g.theme .. "  ·  " .. Logic.size(g.size).name .. "  ·  " .. #g.words .. " " .. _("words"),
         W / 2, y, t * 0.36, false, BLACK)
+    if g.bonus and #g.bonus > 0 then
+        y = y + t * 0.5
+        textCentered(bb, _("Bonus") .. " " .. Logic.bonusFound(g) .. " " .. _("of") .. " " .. #g.bonus,
+            W / 2, y, t * 0.36, true, BLACK)
+    end
 
     local bh = math.floor(t * 0.95)
     local bw = math.floor((pw - 3 * t * 0.5) / 2)
@@ -582,12 +596,12 @@ function WordSearchWidget:goHome()
     UIManager:setDirty(self, "ui")
 end
 
-function WordSearchWidget:found(i)
+function WordSearchWidget:found(w)
     local g = self.game
-    g.words[i].found = true
+    w.found = true
     local seen = G_reader_settings:readSetting("wordsearch_seen") or {}
-    if not seen[g.words[i].w] then
-        seen[g.words[i].w] = true
+    if not seen[w.w] then
+        seen[w.w] = true
         G_reader_settings:saveSetting("wordsearch_seen", seen)
         G_reader_settings:saveSetting("wordsearch_seen_count", setting("seen_count", 0) + 1)
     end
@@ -697,13 +711,12 @@ function WordSearchWidget:onStrokeEnd(pos)
     if pos then s.ex, s.ey = self:toCells(pos) end
     self.stroke = nil
     local boxes = {}
-    local i = s.ex and Logic.snap(self.game, s.sx, s.sy, s.ex, s.ey)
+    local w = s.ex and Logic.snap(self.game, s.sx, s.sy, s.ex, s.ey)
     local box = s.box
-    if i then
+    if w then
         if s.ex then s.pts[#s.pts + 1] = { s.ex, s.ey } end
-        self.game.words[i].path = Logic.fitStroke(s.pts, self.game.words[i])
-        self:found(i)
-        local w = self.game.words[i]
+        w.path = Logic.fitStroke(s.pts, w)
+        self:found(w)
         local L = self.layout
         local wb = self:lineBox(w.r1, w.c1, w.r2, w.c2)
         box = box and box:combine(wb) or wb

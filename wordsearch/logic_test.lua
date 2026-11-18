@@ -31,7 +31,14 @@ for _, size in ipairs(Logic.SIZES) do
             local tag = size.key .. (diag and " diag" or "") .. " seed " .. seed
             check(#g.letters == g.n * g.n, tag .. " letter count")
             check(#g.words == size.words, tag .. " placed " .. #g.words .. " of " .. size.words)
-            for i, w in ipairs(g.words) do
+            check(#g.bonus == Logic.BONUS, tag .. " bonus " .. #g.bonus)
+            local hidden, listed = {}, {}
+            for _, w in ipairs(g.words) do hidden[#hidden + 1] = w listed[w.w] = true end
+            for _, w in ipairs(g.bonus) do
+                hidden[#hidden + 1] = w
+                check(not listed[w.w], tag .. " bonus is listed " .. w.w)
+            end
+            for _, w in ipairs(hidden) do
                 local dr, dc = w.r2 - w.r1, w.c2 - w.c1
                 check(diag or dr == 0 or dc == 0, tag .. " diagonal in straight mode " .. w.w)
                 local steps = math.max(math.abs(dr), math.abs(dc))
@@ -42,9 +49,9 @@ for _, size in ipairs(Logic.SIZES) do
                 check(table.concat(read) == w.w, tag .. " reads " .. table.concat(read) .. " not " .. w.w)
                 local ax, ay, bx, by = w.c1 - 0.5, w.r1 - 0.5, w.c2 - 0.5, w.r2 - 0.5
                 local hit = Logic.snap(g, ax, ay, bx, by)
-                check(hit and g.words[hit].w == w.w, tag .. " exact stroke misses " .. w.w)
+                check(hit == w, tag .. " exact stroke misses " .. w.w)
                 hit = Logic.snap(g, bx + 0.3, by - 0.3, ax - 0.2, ay + 0.4)
-                check(hit and g.words[hit].w == w.w, tag .. " sloppy backward stroke misses " .. w.w)
+                check(hit == w, tag .. " sloppy backward stroke misses " .. w.w)
             end
         end
     end
@@ -93,7 +100,10 @@ for _, size in ipairs(Logic.SIZES) do
     for seed = 1, 200 do
         local g = Logic.generate(themes, size.key, seed % 2 == 0, seed)
         local ls = lines(g)
-        for _, w in ipairs(g.words) do
+        local hidden = {}
+        for _, w in ipairs(g.words) do hidden[#hidden + 1] = w end
+        for _, w in ipairs(g.bonus) do hidden[#hidden + 1] = w end
+        for _, w in ipairs(hidden) do
             local count = 0
             for _, l in ipairs(ls) do
                 local at = 1
@@ -120,6 +130,13 @@ check(Logic.snap(g, w.c1 - 0.5, w.r1 - 0.5, w.c1 - 0.4, w.r1 - 0.4) == nil, "tap
 for _, x in ipairs(g.words) do x.found = true end
 check(Logic.snap(g, w.c1 - 0.5, w.r1 - 0.5, w.c2 - 0.5, w.r2 - 0.5) == nil, "found word snapped again")
 check(Logic.remaining(g) == 0, "remaining after all found")
+local b = g.bonus[1]
+local hit, is_bonus = Logic.snap(g, b.c1 - 0.5, b.r1 - 0.5, b.c2 - 0.5, b.r2 - 0.5)
+check(hit == b and is_bonus, "bonus word did not snap as bonus")
+b.found = true
+check(Logic.bonusFound(g) == 1 and Logic.remaining(g) == 0, "bonus count")
+g.bonus = nil
+check(Logic.bonusFound(g) == 0 and Logic.snap(g, 0.5, 0.5, 3.5, 0.5) == nil, "save without bonus")
 
 -- Fitted strokes: a wobbly, overshooting, backwards stroke keeps its ends on the word's ends and
 -- never wanders further than MAX_WOBBLE off the word's line.

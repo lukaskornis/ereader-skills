@@ -18,6 +18,8 @@ local ALL = { { 0, 1 }, { 1, 0 }, { 0, -1 }, { -1, 0 }, { 1, 1 }, { -1, -1 }, { 
 local EASY = { { 0, 1 }, { 1, 0 } }
 local HARD_STRAIGHT = { { 0, -1 }, { -1, 0 } }
 local HARD_ALL = { { 0, -1 }, { -1, 0 }, { 1, 1 }, { -1, -1 }, { 1, -1 }, { -1, 1 } }
+-- Unlisted theme words hidden on every board.
+Logic.BONUS = 2
 -- Share of listed words, the shortest, laid the easy way so the first finds come fast.
 Logic.EASY_SHARE = 0.4
 -- Filler weighted by English letter frequency, so the noise looks like words and hides the answers.
@@ -124,6 +126,23 @@ local function placeDecoys(cells, n, words, dirs, rnd)
     end
 end
 
+-- Places word and adds it to hidden (every word on the board), or undoes it when it would make some
+-- hidden word read twice: a word inside another (RED in REDWOOD), or one crossing into a copy.
+local function placeUnique(cells, n, word, dirs, all, rnd, hidden)
+    local before = {}
+    for i, v in pairs(cells) do before[i] = v end
+    -- A crowded board may have no room in the preferred directions; any direction beats a missing word.
+    local placed = tryPlace(cells, n, word, dirs, rnd) or (dirs ~= all and tryPlace(cells, n, word, all, rnd))
+    if not placed then return nil end
+    hidden[#hidden + 1] = placed
+    if anyRepeat(cells, n, hidden) then
+        hidden[#hidden] = nil
+        for i in pairs(cells) do cells[i] = before[i] end
+        return nil
+    end
+    return placed
+end
+
 -- Returns a game table, plain data only so it can be saved in KOReader's settings as is.
 function Logic.generate(themes, size_key, diagonals, seed, avoid_theme)
     local size = Logic.size(size_key)
@@ -147,25 +166,24 @@ function Logic.generate(themes, size_key, diagonals, seed, avoid_theme)
     local cells = {}
     local all = diagonals and ALL or STRAIGHT
     local hard = diagonals and HARD_ALL or HARD_STRAIGHT
-    local words = {}
+    local words, hidden, used = {}, {}, {}
     for k, w in ipairs(candidates) do
         if #words >= size.words then break end
         local dirs = k > size.words and all or k >= first_easy and EASY or hard
-        -- A crowded board may have no room in the preferred directions; any direction beats a missing word.
-        local before = {}
-        for i, v in pairs(cells) do before[i] = v end
-        local placed = tryPlace(cells, n, w, dirs, rnd) or (dirs ~= all and tryPlace(cells, n, w, all, rnd))
+        local placed = placeUnique(cells, n, w, dirs, all, rnd, hidden)
         if placed then
             words[#words + 1] = placed
-            -- A word inside another (RED in REDWOOD) or crossing into a copy would read twice: skip it.
-            if anyRepeat(cells, n, words) then
-                words[#words] = nil
-                for i in pairs(cells) do cells[i] = before[i] end
-            end
+            used[w] = true
         end
     end
     table.sort(words, function(a, b) return a.w < b.w end)
-    placeDecoys(cells, n, words, all, rnd)
+    -- Theme words that are hidden but not listed: a reward for whoever spots them.
+    local bonus = {}
+    for _, w in ipairs(candidates) do
+        if #bonus >= Logic.BONUS then break end
+        if not used[w] then bonus[#bonus + 1] = placeUnique(cells, n, w, all, all, rnd, hidden) end
+    end
+    placeDecoys(cells, n, hidden, all, rnd)
 
     local letters = {}
     for i = 1, n * n do
@@ -175,7 +193,7 @@ function Logic.generate(themes, size_key, diagonals, seed, avoid_theme)
     -- Filler can spell a listed word a second time; the fixed cells never do, so a copy always holds
     -- a filler cell to change.
     while true do
-        local w, occ = anyRepeat(letters, n, words)
+        local w, occ = anyRepeat(letters, n, hidden)
         if not w then break end
         local spot
         for _, o in ipairs(occ) do
@@ -190,7 +208,7 @@ function Logic.generate(themes, size_key, diagonals, seed, avoid_theme)
     end
     return {
         size = size_key, n = n, theme = theme.name, diagonals = diagonals and true or false,
-        letters = table.concat(letters), words = words, elapsed = 0, done = false, seed = seed,
+        letters = table.concat(letters), words = words, bonus = bonus, elapsed = 0, done = false, seed = seed,
     }
 end
 
@@ -211,23 +229,34 @@ local function dist(x1, y1, x2, y2)
     return math.sqrt((x1 - x2) ^ 2 + (y1 - y2) ^ 2)
 end
 
--- The unfound word whose ends best match a stroke from (sx, sy) to (ex, ey), in cell units, either
--- way round. A stroke may start or stop a cell or two off the ends; longer words forgive more.
+-- The unfound word, listed or bonus, whose ends best match a stroke from (sx, sy) to (ex, ey), in
+-- cell units, either way round. A stroke may start or stop a cell or two off the ends; longer words
+-- forgive more. Returns the word and whether it is a bonus word.
 function Logic.snap(game, sx, sy, ex, ey)
     if dist(sx, sy, ex, ey) < 0.6 then return nil end
-    local best, best_score
-    for i, w in ipairs(game.words) do
-        if not w.found then
-            local ax, ay, bx, by = w.c1 - 0.5, w.r1 - 0.5, w.c2 - 0.5, w.r2 - 0.5
-            local score = math.min(dist(sx, sy, ax, ay) + dist(ex, ey, bx, by),
-                dist(sx, sy, bx, by) + dist(ex, ey, ax, ay))
-            local limit = math.max(1.6, 0.3 * #w.w)
-            if score <= limit and (not best_score or score < best_score) then
-                best, best_score = i, score
+    local best, best_score, best_bonus
+    for pass, list in ipairs({ game.words, game.bonus or {} }) do
+        for _, w in ipairs(list) do
+            if not w.found then
+                local ax, ay, bx, by = w.c1 - 0.5, w.r1 - 0.5, w.c2 - 0.5, w.r2 - 0.5
+                local score = math.min(dist(sx, sy, ax, ay) + dist(ex, ey, bx, by),
+                    dist(sx, sy, bx, by) + dist(ex, ey, ax, ay))
+                local limit = math.max(1.6, 0.3 * #w.w)
+                if score <= limit and (not best_score or score < best_score) then
+                    best, best_score, best_bonus = w, score, pass == 2
+                end
             end
         end
     end
-    return best
+    return best, best_bonus
+end
+
+function Logic.bonusFound(game)
+    local found = 0
+    for _, w in ipairs(game.bonus or {}) do
+        if w.found then found = found + 1 end
+    end
+    return found
 end
 
 -- How far a fitted stroke may wander off the word's centre line, in cells.
