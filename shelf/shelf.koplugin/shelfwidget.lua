@@ -1,7 +1,7 @@
 --[[--
 Full-screen library page: header (title, clock, view icons, sort, Wi-Fi, light, battery; the last three open popups),
 current-book strip, a page of books, page count, footer (search, folder, library, apps, settings).
-The apps icon swaps the books for a grid of tools (Writer, Word search, Wi-Fi, Send, History), four a row.
+The apps icon swaps the books for a grid of tools (Writer, Word search, Claude, Wi-Fi, Send, History), four a row.
 Send shows a bookdrop.cc code and saves whatever arrives on it to Books.
 
 Layout is in mock units: the approved mock is 300 px wide, so one unit is
@@ -764,6 +764,9 @@ function ShelfWidget:buildApps()
     end
     if self.ui.wordsearch then
         tiles[#tiles + 1] = self:appTile(size, "wordsearch", "Word search", function() self.ui.wordsearch:open() end)
+    end
+    if self.ui.claudechat then
+        tiles[#tiles + 1] = self:appTile(size, "claude", "Claude", function() self.ui.claudechat:open() end)
     end
     tiles[#tiles + 1] = self:appTile(size, NetworkMgr:isWifiOn() and "wifi" or "wifi-off", "Wi-Fi",
         function() self:toggleWifi() end)

@@ -3,6 +3,7 @@
 Chat with Claude from the reader on the Claude subscription. Each chat is a book: one HTML file in `<home>/Claude`, opened in the normal reader with its fonts, margins, page turns, and a table of contents of the questions.
 
 ## Use
+- Shelf > Apps > Claude: New chat, the five newest chats, All chats.
 - Tools menu > Claude: New chat (on-screen keyboard), Chats (opens the folder), Model (Sonnet default, Opus, Haiku), Mac relay address.
 - End of every reply: Go deeper, Example, Simpler, Shorter, Counterpoint, then Ask… (keyboard) and New chat. Tap one; the reply is appended and the book opens at the new section.
 - Select text: hold a word (dictionary popup) or hold and drag a phrase (highlight dialog). Both get Explain simply, More on that, Etymology, Similar concepts. The phrase and about 25 words around it go to Claude. In a chat it continues the chat; in any other book it starts a new chat about the passage, named after the book.

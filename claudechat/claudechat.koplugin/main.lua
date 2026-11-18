@@ -7,6 +7,7 @@ Steering links at the end of the file use the claude: scheme and are caught befo
 external. Selecting text adds Claude buttons to the highlight dialog: in a chat they continue it, in any other
 book they start a new chat about the passage.
 ]]
+local ButtonDialog = require("ui/widget/buttondialog")
 local DataStorage = require("datastorage")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
@@ -232,6 +233,43 @@ function ClaudeChat:showChats()
         return
     end
     self.ui.file_chooser:changeToPath(dir)
+end
+
+local RECENT_CHATS = 5
+
+-- The Shelf's Claude tile: New chat, the newest chats, and the folder.
+function ClaudeChat:open()
+    local dir = chatsDir()
+    local chats = {}
+    for name in lfs.dir(dir) do
+        if name:match("%.html$") then
+            local path = dir .. "/" .. name
+            table.insert(chats, { path = path, name = name:gsub("%.html$", ""),
+                mtime = lfs.attributes(path, "modification") or 0 })
+        end
+    end
+    table.sort(chats, function(a, b) return a.mtime > b.mtime end)
+    local dialog
+    local buttons = {{ { text = _("New chat…"), callback = function()
+        UIManager:close(dialog)
+        self:askNewChat()
+    end } }}
+    for i = 1, math.min(RECENT_CHATS, #chats) do
+        local chat = chats[i]
+        local state = loadChat(chat.path)
+        table.insert(buttons, {{ text = state and state.title or chat.name, align = "left", callback = function()
+            UIManager:close(dialog)
+            require("apps/reader/readerui"):showReader(chat.path)
+        end }})
+    end
+    if #chats > RECENT_CHATS then
+        table.insert(buttons, {{ text = _("All chats"), callback = function()
+            UIManager:close(dialog)
+            self:showChats()
+        end }})
+    end
+    dialog = ButtonDialog:new{ title = _("Claude"), buttons = buttons }
+    UIManager:show(dialog)
 end
 
 -- Asks for text with the on-screen keyboard, then calls on_text(text).
