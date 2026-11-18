@@ -14,6 +14,7 @@ Make an old e-reader fast and modern with KOReader, then develop and test on it 
 | `koreader-redraw.md` | How KOReader repaints and refreshes: setDirty, modes, promotion, e-ink settings, measured timings. Read before uimanager.lua |
 | `typewriter/typewriter.md` | The typewriter: type on the Kobo with the Mac keyboard (`ink type`), plugin, relay, latency |
 | `koboot/koboot.md` | Kobo boots straight into KOReader (tap to stay in Nickel): udev hook, crash guard, skip flag, recovery |
+| `claudechat/claudechat.md` | Claude chat on the reader: Mac relay on the subscription, chats as books, steering links, ask about selected text |
 | `shelf/shelf.md` | The Shelf plugin: library home screen with covers, tiles or names |
 | `patch-cpu-performance.lua` | KOReader user patch, installed as `patches/2-cpu-performance.lua` on Kobo and Kindle: full CPU clock, with a Settings > Device > Full CPU speed toggle (off: interactive on Kobo, ondemand on Kindle); skipped without a writable governor |
 | `patch-fast-page-turn.lua` | KOReader user patch, installed as `patches/2-fast-page-turn.lua` on Kobo and Kindle (e-ink only): page turns use the DU waveform (toggle: reader gear tab, "Page turns: Fast / Quality", or a gesture; Kindle defaults to Quality), and fast swipe bursts are coalesced into one refresh per 0.3 s |
@@ -38,7 +39,7 @@ Make an old e-reader fast and modern with KOReader, then develop and test on it 
 | Command | What it does |
 |---|---|
 | `ink shot [OUT] [--max N]` | Screenshot to a PNG, default `/tmp/ink_<dev>_shot.png`, already shrunk to 400 px on the long side (`--max 0` keeps full res); prints the path and the tap scale, then `Read` it |
-| `ink tap X Y` | Tap, in screenshot pixel coordinates |
+| `ink tap X Y` | Tap, in full-resolution pixels: screenshot pixels times the printed scale |
 | `ink time X Y [S=0.6] [--shot OUT]` | Tap, then the seconds to the last paint and to the panel done, timed on the device. With the Kobo hook it returns the moment KOReader is idle (no task due within 0.35 s) and the panel has finished; book open about 2 s wall, was 4 to 5. Without the hook (Kindle) it watches the framebuffer until unchanged for S s; pass 2 for book opens. Gives up after 3 s with no change. `--shot OUT` takes the screenshot after |
 | `ink hold X Y [MS=800]` | Long press |
 | `ink swipe X1 Y1 X2 Y2 [MS=120]` | Swipe; above ~200 ms it reads as a pan, so keep it fast |
