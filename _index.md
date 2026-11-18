@@ -85,6 +85,8 @@ The same patch arms an idle report on an "INI" event (0x494E49), and it starts a
 - Doc and changelog updates stay inline: they need this session's measurements.
 
 ### Routing rules
+- Before driving the device, check it is free: if strokes you didn't send show up, or a book is open that you didn't open, the owner is using it. Stop tapping and test off screen (scratch Blitbuffer, `ink eval`). On 2026-11-18 my taps and his play mixed and made no sense until a gesture log showed his pans.
+- A new plugin folder is not loaded until `ink restart`; `ink reload` only works for plugins already loaded. After a reload, close the old module's widgets before reopening, or the lookup finds the stale instance.
 - A device reports "not found": KOReader is closed or the device is asleep. dropbear survives a KOReader exit, so `ink sh` usually still works. Relaunch with `ink sh 'setsid sh /mnt/us/documents/KOReader.sh </dev/null >/dev/null 2>&1 &'`.
 - KOReader rewrites `settings.reader.lua` on exit, so never edit it by hand while it runs. Use `ink set`, which stops it first. For several changes, `ink stop`, then the `set` calls, then `ink start`: one relaunch instead of one per key.
 - `ink get` reads the file, which KOReader saves on exit and every 15 minutes. A change made in the UI a moment ago may not show yet.

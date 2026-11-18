@@ -33,3 +33,11 @@ Applies to the Kindle and the Kobo. Verified on KOReader v2026.07.1.
 ## Device shell gotchas
 - In busybox 1.31 on the Kobo, `pkill -x` and `pgrep -x` never match. Use `killall NAME` or `pidof NAME`.
 - After a restart, KOReader opens whatever was showing on exit: the file browser or the last book.
+
+## Plugin lessons (Word search, 2026-11-18)
+- Put the rules in a pure Lua module with no KOReader requires and test it on the Mac with Homebrew `luajit` (`brew install luajit`); go to the device only for the final look and feel. 2400 boards checked in 0.1 s.
+- Load sibling files with `dofile(debug.getinfo(1, "S").source:match("^@(.*/)") .. "x.lua")`, not `require`: it survives `ink reload` and never picks up a stale `package.loaded` entry.
+- `paintCircle` is per pixel: a board of diagonal markers made of chained circles took 3.8 s to paint. Fill shapes a row at a time with `paintRect(x, y, w, 1)` (stadium span per row): 32 ms.
+- Low-latency touch feedback: skip UIManager. Paint only the touched box into an off-screen `Blitbuffer.new(w, h, Screen.bb:getType())`, `Screen.bb:blitFrom` it, then `Screen:refreshA2(box)`; coalesce pan batches with one `nextTick`. 10 to 17 ms a frame on the Aura One. Draw pure black and white for A2, then clean with a "ui" refresh. Only when the widget is top of `UIManager._window_stack`.
+- Strokes: register "touch" (finger down, instant), "pan" and "hold_pan" (pos is the current point), "pan_release" and "hold_release", and "swipe" (a fast stroke ends as one; pos is the start, plus direction and distance).
+- Time paints with `ink eval` into a scratch Blitbuffer, so the owner's screen is untouched.

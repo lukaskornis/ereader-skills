@@ -1,7 +1,7 @@
 --[[--
 Full-screen library page: header (title, clock, view icons, sort, Wi-Fi, light, battery; the last three open popups),
 current-book strip, a page of books, page count, footer (search, folder, library, apps, settings).
-The apps icon swaps the books for a grid of tools (Writer, Wi-Fi, Send).
+The apps icon swaps the books for a grid of tools (Writer, Word search, Wi-Fi, Send, History), four a row.
 Send shows a bookdrop.cc code and saves whatever arrives on it to Books.
 
 Layout is in mock units: the approved mock is 300 px wide, so one unit is
@@ -758,18 +758,30 @@ function ShelfWidget:buildApps()
     local pad = self:px(10)
     local gap = self:px(8)
     local size = math.floor((self.width - 2 * pad - 3 * gap) / 4)
-    local row = HorizontalGroup:new{ HorizontalSpan:new{ width = pad } }
+    local tiles = {}
     if self.ui.typewriter then
-        table.insert(row, self:appTile(size, "typography", "Writer", function() self.ui.typewriter:open() end))
-        table.insert(row, HorizontalSpan:new{ width = gap })
+        tiles[#tiles + 1] = self:appTile(size, "typography", "Writer", function() self.ui.typewriter:open() end)
     end
-    table.insert(row, self:appTile(size, NetworkMgr:isWifiOn() and "wifi" or "wifi-off", "Wi-Fi",
-        function() self:toggleWifi() end))
-    table.insert(row, HorizontalSpan:new{ width = gap })
-    table.insert(row, self:appTile(size, "book-download", "Send", function() self:openSend() end))
-    table.insert(row, HorizontalSpan:new{ width = gap })
-    table.insert(row, self:appTile(size, "history", "History", function() self:showHistory() end))
-    return VerticalGroup:new{ align = "left", VerticalSpan:new{ width = self:px(12) }, row }
+    if self.ui.wordsearch then
+        tiles[#tiles + 1] = self:appTile(size, "wordsearch", "Word search", function() self.ui.wordsearch:open() end)
+    end
+    tiles[#tiles + 1] = self:appTile(size, NetworkMgr:isWifiOn() and "wifi" or "wifi-off", "Wi-Fi",
+        function() self:toggleWifi() end)
+    tiles[#tiles + 1] = self:appTile(size, "book-download", "Send", function() self:openSend() end)
+    tiles[#tiles + 1] = self:appTile(size, "history", "History", function() self:showHistory() end)
+    local grid = VerticalGroup:new{ align = "left" }
+    local row
+    for i, tile in ipairs(tiles) do
+        if (i - 1) % 4 == 0 then
+            table.insert(grid, VerticalSpan:new{ width = i == 1 and self:px(12) or gap })
+            row = HorizontalGroup:new{ HorizontalSpan:new{ width = pad } }
+            table.insert(grid, row)
+        else
+            table.insert(row, HorizontalSpan:new{ width = gap })
+        end
+        table.insert(row, tile)
+    end
+    return grid
 end
 
 local function sizeText(bytes)
