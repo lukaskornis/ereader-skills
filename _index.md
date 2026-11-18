@@ -10,10 +10,13 @@ Make an old e-reader fast and modern with KOReader, then develop and test on it 
 | `kobo.md` | Anything Kobo; it lists what is verified and what isn't |
 | `kindle.md` | Anything Kindle: ink hookup, what is verified, home folder, page-turn quality, safety |
 | `speed-kobo.md` | Kobo speed settings, measurements, CPU and page-turn patches |
+| `koreader-apps.md` | Starting or continuing a plugin app: layout, Mac logic tests, Shelf tile, UI rules, fast dev loop, cheap screen checks, handoffs, extension points |
 | `koreader-patches.md` | Writing user patches or plugins: stages, menu items, refresh, busybox gotchas |
 | `koreader-redraw.md` | How KOReader repaints and refreshes: setDirty, modes, promotion, e-ink settings, measured timings. Read before uimanager.lua |
 | `typewriter/typewriter.md` | The typewriter: type on the Kobo with the Mac keyboard (`ink type`), plugin, relay, latency |
 | `koboot/koboot.md` | Kobo boots straight into KOReader (tap to stay in Nickel): udev hook, crash guard, skip flag, recovery |
+| `claudechat/claudechat.md` | Claude chat on the reader: Mac relay on the subscription, chats as books, steering links, ask about selected text |
+| `wordsearch/wordsearch.md` | The Word search plugin: four board sizes, swipe-to-snap, saved board, Mac logic test |
 | `shelf/shelf.md` | The Shelf plugin: library home screen with covers, tiles or names |
 | `patch-cpu-performance.lua` | KOReader user patch, installed as `patches/2-cpu-performance.lua` on Kobo and Kindle: full CPU clock, with a Settings > Device > Full CPU speed toggle (off: interactive on Kobo, ondemand on Kindle); skipped without a writable governor |
 | `patch-fast-page-turn.lua` | KOReader user patch, installed as `patches/2-fast-page-turn.lua` on Kobo and Kindle (e-ink only): page turns use the DU waveform (toggle: reader gear tab, "Page turns: Fast / Quality", or a gesture; Kindle defaults to Quality), and fast swipe bursts are coalesced into one refresh per 0.3 s |
@@ -38,7 +41,7 @@ Make an old e-reader fast and modern with KOReader, then develop and test on it 
 | Command | What it does |
 |---|---|
 | `ink shot [OUT] [--max N]` | Screenshot to a PNG, default `/tmp/ink_<dev>_shot.png`, already shrunk to 400 px on the long side (`--max 0` keeps full res); prints the path and the tap scale, then `Read` it |
-| `ink tap X Y` | Tap, in screenshot pixel coordinates |
+| `ink tap X Y` | Tap, in full-resolution pixels: screenshot pixels times the printed scale |
 | `ink time X Y [S=0.6] [--shot OUT]` | Tap, then the seconds to the last paint and to the panel done, timed on the device. With the Kobo hook it returns the moment KOReader is idle (no task due within 0.35 s) and the panel has finished; book open about 2 s wall, was 4 to 5. Without the hook (Kindle) it watches the framebuffer until unchanged for S s; pass 2 for book opens. Gives up after 3 s with no change. `--shot OUT` takes the screenshot after |
 | `ink hold X Y [MS=800]` | Long press |
 | `ink swipe X1 Y1 X2 Y2 [MS=120]` | Swipe; above ~200 ms it reads as a pan, so keep it fast |
@@ -83,6 +86,8 @@ The same patch arms an idle report on an "INI" event (0x494E49), and it starts a
 - Doc and changelog updates stay inline: they need this session's measurements.
 
 ### Routing rules
+- Before driving the device, check it is free: if strokes you didn't send show up, or a book is open that you didn't open, the owner is using it. Stop tapping and test off screen (scratch Blitbuffer, `ink eval`). On 2026-11-18 my taps and his play mixed and made no sense until a gesture log showed his pans.
+- A new plugin folder is not loaded until `ink restart`; `ink reload` only works for plugins already loaded. After a reload, close the old module's widgets before reopening, or the lookup finds the stale instance.
 - A device reports "not found": KOReader is closed or the device is asleep. dropbear survives a KOReader exit, so `ink sh` usually still works. Relaunch with `ink sh 'setsid sh /mnt/us/documents/KOReader.sh </dev/null >/dev/null 2>&1 &'`.
 - KOReader rewrites `settings.reader.lua` on exit, so never edit it by hand while it runs. Use `ink set`, which stops it first. For several changes, `ink stop`, then the `set` calls, then `ink start`: one relaunch instead of one per key.
 - `ink get` reads the file, which KOReader saves on exit and every 15 minutes. A change made in the UI a moment ago may not show yet.
