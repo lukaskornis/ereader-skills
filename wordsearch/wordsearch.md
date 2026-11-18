@@ -6,6 +6,7 @@ KOReader plugin: English word search puzzles. Tools menu > Word search.
 - Home: tile logo (WORD crossed by a hand-drawn line), all-time count of unique words found, Continue (thumbnail, theme, size, one square per word), New puzzle as four plain size buttons, three switches.
 - Sizes: Small 8×8 with 6 words, Medium 11×11 with 10, Big 14×14 with 15, Huge 18×18 with 22.
 - Switches: Diagonal words (new boards place words on all eight lines, else the four straight ones, backwards included), Show progress (a row of hollow squares under the theme that fill as words are found), Hide word list (the list then shows only found words).
+- Easy first: the shortest 40% of a board's words read left to right or top to bottom; the rest go backwards or (when on) diagonal, falling back to any direction only when a crowded board has no room.
 - Header: back chevron top left, theme, progress squares.
 - Draw across a word: a pencil line follows the finger. On release the trail vanishes and the stroke snaps to the unfound word whose ends best match it, either way round, forgiving max(1.6, 0.3 × length) cells in total end error.
 - A find gets a thin black line (radius 4% of a cell, letters stay readable) through its letters shaped like the drawn stroke: the stroke is fitted onto the word (`Logic.fitStroke`), its wobble scaled down only as far as needed to stay within 0.22 cells. In the list the word keeps its font and gets a hand-drawn strike, each a different wobble. All found: confetti, SOLVED tiles, time, stars (under 20 s a word 3, under 40 s 2).

@@ -14,6 +14,12 @@ Logic.SIZES = {
 
 local STRAIGHT = { { 0, 1 }, { 1, 0 }, { 0, -1 }, { -1, 0 } }
 local ALL = { { 0, 1 }, { 1, 0 }, { 0, -1 }, { -1, 0 }, { 1, 1 }, { -1, -1 }, { 1, -1 }, { -1, 1 } }
+-- Reads like a book: left to right or top to bottom.
+local EASY = { { 0, 1 }, { 1, 0 } }
+local HARD_STRAIGHT = { { 0, -1 }, { -1, 0 } }
+local HARD_ALL = { { 0, -1 }, { -1, 0 }, { 1, 1 }, { -1, -1 }, { 1, -1 }, { -1, 1 } }
+-- Share of listed words, the shortest, laid the easy way so the first finds come fast.
+Logic.EASY_SHARE = 0.4
 -- Filler weighted by English letter frequency, so the noise looks like words and hides the answers.
 local FILL = "EEEEEEEEEEEETTTTTTTTTAAAAAAAAOOOOOOOIIIIIIINNNNNNNSSSSSSHHHHHHRRRRRRDDDDLLLLCCCUUUMMMWWFFGGYYPPBBVKJXQZ"
 local PLACE_TRIES = 300
@@ -84,14 +90,18 @@ function Logic.generate(themes, size_key, diagonals, seed, avoid_theme)
     local candidates = {}
     for i = 1, math.min(#pool, size.words) do candidates[i] = pool[i] end
     table.sort(candidates, function(a, b) return #a > #b end)
+    local first_easy = #candidates - math.ceil(#candidates * Logic.EASY_SHARE) + 1
     for i = size.words + 1, #pool do candidates[#candidates + 1] = pool[i] end
 
     local cells = {}
-    local dirs = diagonals and ALL or STRAIGHT
+    local all = diagonals and ALL or STRAIGHT
+    local hard = diagonals and HARD_ALL or HARD_STRAIGHT
     local words = {}
-    for _, w in ipairs(candidates) do
+    for k, w in ipairs(candidates) do
         if #words >= size.words then break end
-        local placed = tryPlace(cells, n, w, dirs, rnd)
+        local dirs = k > size.words and all or k >= first_easy and EASY or hard
+        -- A crowded board may have no room in the preferred directions; any direction beats a missing word.
+        local placed = tryPlace(cells, n, w, dirs, rnd) or (dirs ~= all and tryPlace(cells, n, w, all, rnd))
         if placed then words[#words + 1] = placed end
     end
     table.sort(words, function(a, b) return a.w < b.w end)
