@@ -3,8 +3,9 @@
 Applies to the Kindle and the Kobo. Verified on KOReader v2026.07.1.
 
 ## Before writing
-- Read the on-device Lua, never guess: `ink sh 'grep -n PATTERN /mnt/onboard/.adds/koreader/frontend/...'` (on the Kindle, `/mnt/us/koreader`).
-- The device has busybox grep: no `--include`, no `-P`. Use `grep -rn PATTERN dir` or `find … | xargs grep`.
+- Read KOReader's Lua, never guess: Grep and Read the local `koreader-src/<version>` copy, not `ink sh grep` on the device (that was 80% of ink's token cost).
+- On the device shell, busybox grep has no `--include` and no `-P`. Use `grep -rn PATTERN dir` or `find … | xargs grep`.
+- Building a whole app: read `koreader-apps.md` first.
 
 ## Patch files
 - They live in `<koreader>/patches/N-name.lua`, run in name order, and are logged as "Applying patch" in `ink log`.

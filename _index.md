@@ -10,6 +10,7 @@ Make an old e-reader fast and modern with KOReader, then develop and test on it 
 | `kobo.md` | Anything Kobo; it lists what is verified and what isn't |
 | `kindle.md` | Anything Kindle: ink hookup, what is verified, home folder, page-turn quality, safety |
 | `speed-kobo.md` | Kobo speed settings, measurements, CPU and page-turn patches |
+| `koreader-apps.md` | Starting or continuing a plugin app: layout, Mac logic tests, Shelf tile, UI rules, fast dev loop, cheap screen checks, handoffs, extension points |
 | `koreader-patches.md` | Writing user patches or plugins: stages, menu items, refresh, busybox gotchas |
 | `koreader-redraw.md` | How KOReader repaints and refreshes: setDirty, modes, promotion, e-ink settings, measured timings. Read before uimanager.lua |
 | `typewriter/typewriter.md` | The typewriter: type on the Kobo with the Mac keyboard (`ink type`), plugin, relay, latency |
