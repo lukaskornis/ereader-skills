@@ -15,6 +15,7 @@ Make an old e-reader fast and modern with KOReader, then develop and test on it 
 | `typewriter/typewriter.md` | The typewriter: type on the Kobo with the Mac keyboard (`ink type`), plugin, relay, latency |
 | `koboot/koboot.md` | Kobo boots straight into KOReader (tap to stay in Nickel): udev hook, crash guard, skip flag, recovery |
 | `claudechat/claudechat.md` | Claude chat on the reader: Mac relay on the subscription, chats as books, steering links, ask about selected text |
+| `wordsearch/wordsearch.md` | The Word search plugin: four board sizes, swipe-to-snap, saved board, Mac logic test |
 | `shelf/shelf.md` | The Shelf plugin: library home screen with covers, tiles or names |
 | `patch-cpu-performance.lua` | KOReader user patch, installed as `patches/2-cpu-performance.lua` on Kobo and Kindle: full CPU clock, with a Settings > Device > Full CPU speed toggle (off: interactive on Kobo, ondemand on Kindle); skipped without a writable governor |
 | `patch-fast-page-turn.lua` | KOReader user patch, installed as `patches/2-fast-page-turn.lua` on Kobo and Kindle (e-ink only): page turns use the DU waveform (toggle: reader gear tab, "Page turns: Fast / Quality", or a gesture; Kindle defaults to Quality), and fast swipe bursts are coalesced into one refresh per 0.3 s |
