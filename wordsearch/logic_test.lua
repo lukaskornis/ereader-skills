@@ -62,15 +62,5 @@ for _, x in ipairs(g.words) do x.found = true end
 check(Logic.snap(g, w.c1 - 0.5, w.r1 - 0.5, w.c2 - 0.5, w.r2 - 0.5) == nil, "found word snapped again")
 check(Logic.remaining(g) == 0, "remaining after all found")
 
--- Preview line: snaps to 45 degrees with diagonals, 90 without, and stays on the board.
-g.diagonals = true
-local r, c = Logic.lineEnd(g, 1, 1, 3.4, 3.6)
-check(r == 4 and c == 4, "diagonal preview " .. r .. "," .. c)
-g.diagonals = false
-r, c = Logic.lineEnd(g, 1, 1, 3.4, 3.6)
-check((r == 1 or c == 1) and not (r == 1 and c == 1), "straight preview " .. r .. "," .. c)
-r, c = Logic.lineEnd(g, 1, 1, 40, 0.5)
-check(r == 1 and c == g.n, "preview clamps to edge " .. r .. "," .. c)
-
 print(fails == 0 and "PASS" or ("FAILED " .. fails))
 os.exit(fails == 0 and 0 or 1)

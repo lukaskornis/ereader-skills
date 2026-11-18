@@ -6,8 +6,9 @@ KOReader plugin: English word search puzzles. Tools menu > Word search.
 - Home: Continue (thumbnail of the saved board, theme, size, progress), New puzzle in four sizes, two switches.
 - Sizes: Small 8×8 with 6 words, Medium 11×11 with 10, Big 14×14 with 15, Huge 18×18 with 22.
 - Switches: Diagonal words (new boards place words on all eight lines, else the four straight ones, backwards included) and Show words left (pill and progress bar in the header).
-- Swipe across a word. A live outline follows the finger on the nearest allowed line; on release the stroke snaps to the unfound word whose ends best match it, either way round, forgiving max(1.6, 0.3 × length) cells in total end error.
-- A find flashes the word black, shows a cheer in the header, then leaves a grey marker; the word is struck out in the list. All found: confetti, SOLVED tiles, time, stars (under 20 s a word 3, under 40 s 2).
+- Draw across a word: a pencil line follows the finger. On release the trail vanishes and the stroke snaps to the unfound word whose ends best match it, either way round, forgiving max(1.6, 0.3 × length) cells in total end error.
+- A find gets a thick black line through its letters and a thick strike in the list. All found: confetti, SOLVED tiles, time, stars (under 20 s a word 3, under 40 s 2).
+- No greys anywhere (owner's call, 2026-11-18): every frame is thresholded to pure black and white, so A2 shows it exactly and nothing needs a flash.
 - Menu goes back home. Closing (✕ on home, or KOReader exit through FlushSettings) saves the board.
 
 ## Files
@@ -20,10 +21,10 @@ KOReader plugin: English word search puzzles. Tools menu > Word search.
 - `wordsearch_diagonals`, `wordsearch_show_left`: switches, default on.
 
 ## Refresh and latency
-- Stroke feedback skips UIManager: the touched box is painted into an off-screen buffer, blitted into the framebuffer and refreshed with A2 at once. Touch shows the start ring; pan batches draw once per tick. Box paint 9 to 17 ms on the Aura One (2026-11-18); panel A2 about 145 ms.
-- A find paints the black marker with white letters the same way (pure black and white, so A2 shows it clean), then a "ui" repaint brings back greys, header and list. The settings flush runs after the flash.
-- No match: the box is redrawn with a "ui" refresh. Mode changes and the win panel: "flashui".
-- Markers are filled row by row (`capsule`). paintCircle is per pixel: one board with diagonal markers took 3.8 s to paint; now a full game paint is 32 ms.
+- The page is rendered into an off-screen BB8 frame, then only the part shown is thresholded (< 0xA0 black) and copied to the screen.
+- Pencil: each pan segment is painted straight into `Screen.bb` (row-filled stroke, radius `PEN`) and its box refreshed with A2, one refresh per input batch (`nextTick`).
+- Release: frame re-rendered (84 ms for Huge on the Aura One), then the trail plus word box, the word list and the header are copied and refreshed with A2. No UIManager repaint, no flash. Mode changes, the win panel and the first show use "ui" (no flash).
+- Markers are filled row by row (`capsule`). paintCircle is per pixel: one board took 3.8 s with chained circles.
 
 ## Dev
 - Push and reload: `ink -d kobo reload wordsearch wordsearch/wordsearch.koplugin`. The first install needs `ink restart` to load the plugin.

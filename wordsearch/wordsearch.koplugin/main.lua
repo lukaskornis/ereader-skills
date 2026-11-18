@@ -1,11 +1,12 @@
 --[[
 Word search: one full-screen widget that paints itself with Blitbuffer. Two modes, "home" (continue,
 new board by size, toggles) and "game" (grid, word list, a win panel on top when solved).
-A stroke across the grid draws a live outline (DU refresh on its box only); on release it snaps to
-the nearest unfound word (logic.lua). The board is saved in G_reader_settings after every find and
+A stroke draws a pencil trail under the finger (A2, segment boxes only); on release it snaps to the
+nearest unfound word (logic.lua), which gets a thick black line through it. The board is saved in G_reader_settings after every find and
 on close, so the home screen can offer Continue.
 ]]
 local Blitbuffer = require("ffi/blitbuffer")
+local ffi = require("ffi")
 local Device = require("device")
 local Font = require("ui/font")
 local Geom = require("ui/geometry")
@@ -22,12 +23,10 @@ local Logic = dofile(DIR .. "logic.lua")
 local THEMES = dofile(DIR .. "words.lua")
 
 local BLACK, WHITE = Blitbuffer.COLOR_BLACK, Blitbuffer.COLOR_WHITE
-local DARK = Blitbuffer.Color8(0x55)
-local GRAY = Blitbuffer.Color8(0x88)
-local LIGHT = Blitbuffer.Color8(0xC8)
-local PALE = Blitbuffer.Color8(0xE8)
-local CHEERS = { "Nice!", "Great find!", "Sharp eyes!", "Brilliant!", "Got it!", "Superb!", "Spot on!" }
-local FLASH_TIME, CHEER_TIME = 0.5, 1.8
+-- Pure black and white everywhere: every frame is thresholded, so A2 shows it exactly and the
+-- panel never needs a flash to clear greys.
+local INK_THRESHOLD = 0xA0
+local PEN = math.max(3, math.floor(Screen:scaleBySize(2.5)))
 local SAVE_KEY = "wordsearch_game"
 
 local SCALE = Screen:scaleBySize(1000) / 1000
@@ -99,6 +98,18 @@ local function capsule(bb, x1, y1, x2, y2, r, color)
     end
 end
 
+-- Every pixel in the box to 0 or 255. Frames are always unrotated BB8, whatever the screen's type.
+local function binarize(bb, box)
+    local data = ffi.cast("uint8_t*", bb.data)
+    local stride = tonumber(bb.stride)
+    for y = box.y, box.y + box.h - 1 do
+        local row = data + y * stride
+        for x = box.x, box.x + box.w - 1 do
+            row[x] = row[x] < INK_THRESHOLD and 0 or 255
+        end
+    end
+end
+
 local function setting(key, default)
     local v = G_reader_settings:readSetting("wordsearch_" .. key)
     if v == nil then return default end
@@ -119,7 +130,6 @@ function WordSearchWidget:init()
     self.game = G_reader_settings:readSetting(SAVE_KEY)
     self.mode = "home"
     self.hits = {}
-    self.ox, self.oy = 0, 0
     local all = { ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1 }
     local function zone(id, ges, handler)
         return { id = "wordsearch_" .. id, ges = ges, screen_zone = all, handler = handler }
@@ -160,10 +170,9 @@ function WordSearchWidget:gameLayout()
     return L
 end
 
--- ox, oy shift drawing into a box-sized buffer (drawNow).
 function WordSearchWidget:cellCenter(r, c)
     local L = self.layout
-    return L.gx + (c - 0.5) * L.cell - self.ox, L.gy + (r - 0.5) * L.cell - self.oy
+    return L.gx + (c - 0.5) * L.cell, L.gy + (r - 0.5) * L.cell
 end
 
 function WordSearchWidget:toCells(pos)
@@ -188,38 +197,57 @@ end
 
 -- Painting ------------------------------------------------------------------------------------------
 
-function WordSearchWidget:paintTo(bb, x, y)
+-- The whole page is drawn off screen; callers threshold only the part they show.
+function WordSearchWidget:renderFrame()
+    local W, H = self.dimen.w, self.dimen.h
+    if not self.frame then self.frame = Blitbuffer.new(W, H, Blitbuffer.TYPE_BB8) end
+    local bb = self.frame
     self.hits = {}
-    bb:paintRect(0, 0, self.dimen.w, self.dimen.h, WHITE)
+    bb:fill(WHITE)
     if self.mode == "game" then
         self:paintGame(bb)
-        if self.game.done and not self.flash then self:paintWin(bb) end
+        if self.game.done then self:paintWin(bb) end
     else
         self:paintHome(bb)
     end
 end
 
--- Letter tiles, alternating solid and grey, as used by the titles.
+function WordSearchWidget:paintTo(bb, x, y)
+    self:renderFrame()
+    binarize(self.frame, self.dimen)
+    bb:blitFrom(self.frame, x, y, 0, 0, self.dimen.w, self.dimen.h)
+end
+
+-- Letter tiles, alternating solid and outlined, as used by the titles.
 function WordSearchWidget:paintTiles(bb, word, cx, cy, t)
     local gap = math.floor(t * 0.12)
     local x = math.floor(cx - (#word * t + (#word - 1) * gap) / 2)
     for i = 1, #word do
         local solid = i % 2 == 1
-        bb:paintRoundedRect(x, math.floor(cy - t / 2), t, t, solid and BLACK or LIGHT, math.floor(t * 0.18))
+        if solid then
+            bb:paintRoundedRect(x, math.floor(cy - t / 2), t, t, BLACK, math.floor(t * 0.18))
+        else
+            bb:paintBorder(x, math.floor(cy - t / 2), t, t, math.max(3, math.floor(t * 0.06)), BLACK, math.floor(t * 0.18))
+        end
         textCentered(bb, word:sub(i, i), x + t / 2, cy, t * 0.62, true, solid and WHITE or BLACK)
         x = x + t + gap
     end
     return #word * t + (#word - 1) * gap
 end
 
--- n x n squares in a box; `dark(r, c)` picks the filled ones.
+-- n x n cells in a box: a square where `dark(r, c)`, else a small dot.
 local function miniGrid(bb, x, y, side, n, dark)
     local cell = side / n
     local s = math.max(1, math.floor(cell * 0.78))
+    local d = math.max(2, math.floor(cell * 0.26))
     for r = 1, n do
         for c = 1, n do
-            bb:paintRect(math.floor(x + (c - 1) * cell), math.floor(y + (r - 1) * cell), s, s,
-                dark(r, c) and BLACK or LIGHT)
+            local cx, cy = math.floor(x + (c - 1) * cell), math.floor(y + (r - 1) * cell)
+            if dark(r, c) then
+                bb:paintRect(cx, cy, s, s, BLACK)
+            else
+                bb:paintRect(cx + math.floor((s - d) / 2), cy + math.floor((s - d) / 2), d, d, BLACK)
+            end
         end
     end
 end
@@ -233,9 +261,14 @@ end
 local function switch(bb, x, cy, w, on)
     local h = math.floor(w * 0.52)
     local y = math.floor(cy - h / 2)
-    bb:paintRoundedRect(x, y, w, h, on and BLACK or LIGHT, math.floor(h / 2))
-    local kr = math.floor(h / 2) - 5
-    bb:paintCircle(on and x + w - h / 2 or x + h / 2, cy, kr, WHITE)
+    local kr = math.floor(h / 2) - 7
+    if on then
+        bb:paintRoundedRect(x, y, w, h, BLACK, math.floor(h / 2))
+        capsule(bb, x + w - h / 2, cy, x + w - h / 2, cy, kr, WHITE)
+    else
+        bb:paintBorder(x, y, w, h, 4, BLACK, math.floor(h / 2))
+        capsule(bb, x + h / 2, cy, x + h / 2, cy, kr, BLACK)
+    end
 end
 
 function WordSearchWidget:paintHome(bb)
@@ -281,7 +314,7 @@ function WordSearchWidget:paintHome(bb)
         text(bb, g.theme .. "  ·  " .. Logic.size(g.size).name, tx, y + ch * 0.53, t * 0.36, false, WHITE)
         local bw = W - m - pad - tx
         local by = math.floor(y + ch * 0.76)
-        bb:paintRoundedRect(tx, by, bw, 18, DARK, 9)
+        bb:paintBorder(tx, by, bw, 18, 3, WHITE, 9)
         bb:paintRoundedRect(tx, by, math.max(18, math.floor(bw * (total - left) / total)), 18, WHITE, 9)
         self:hit(m, y, W - 2 * m, ch, function() self:startGame() end)
         y = y + ch + m
@@ -307,7 +340,7 @@ function WordSearchWidget:paintHome(bb)
         end)
         local tx = cx + 2 * pad + side
         text(bb, size.name, tx, cy + ch * 0.36, t * 0.5, true)
-        text(bb, n .. "×" .. n .. " · " .. size.words .. " " .. _("words"), tx, cy + ch * 0.68, t * 0.3, false, DARK)
+        text(bb, n .. "×" .. n .. " · " .. size.words .. " " .. _("words"), tx, cy + ch * 0.68, t * 0.3, false, BLACK)
         self:hit(cx, cy, cw, ch, function() self:newGame(size.key) end)
     end
     y = y + 2 * ch + gap + m
@@ -325,10 +358,12 @@ function WordSearchWidget:paintHome(bb)
             G_reader_settings:saveSetting("wordsearch_" .. row.key, not on)
             UIManager:setDirty(self, "ui")
         end)
-        bb:paintRect(m, y + rh, W - 2 * m, 2, LIGHT)
+        bb:paintRect(m, y + rh, W - 2 * m, 2, BLACK)
         y = y + rh
     end
-    textCentered(bb, _("Swipe across a word to circle it."), W / 2, math.min(H - m, y + m * 1.5), t * 0.32, false, GRAY)
+    if y + m * 1.5 < H - m / 2 then
+        textCentered(bb, _("Draw across a word to cross it out."), W / 2, y + m * 1.5, t * 0.32, false, BLACK)
+    end
 end
 
 function WordSearchWidget:paintGame(bb)
@@ -336,14 +371,13 @@ function WordSearchWidget:paintGame(bb)
     local W = self.dimen.w
     local header = L.header
 
-    -- Header: back, theme (or a cheer), words left.
+    -- Header: back, theme, words left.
     local hy = header / 2 + L.m / 2
     local hp = header * 0.42
     text(bb, "‹", L.m, hy - hp * 0.08, hp * 1.4, true)
     text(bb, _("Menu"), L.m + hp * 0.7, hy, hp * 0.62, false)
     self:hit(0, 0, L.m + hp * 3.2, header + L.m / 2, function() self:goHome() end)
-    local title = self.cheer or g.theme
-    textCentered(bb, title, W / 2, hy, hp * (self.cheer and 0.95 or 0.8), true)
+    textCentered(bb, g.theme, W / 2, hy, hp * 0.8, true)
     local total, left = #g.words, Logic.remaining(g)
     if setting("show_left", true) then
         local label = left == 0 and "✓" or (left .. " " .. _("left"))
@@ -353,69 +387,39 @@ function WordSearchWidget:paintGame(bb)
         bb:paintRoundedRect(math.floor(W - L.m - pw), math.floor(hy - ph / 2), math.floor(pw), ph, BLACK, math.floor(ph / 2))
         textCentered(bb, label, W - L.m - pw / 2, hy, px, true, WHITE)
         -- Progress bar along the header's foot.
-        bb:paintRect(L.m, header + L.m / 2 - 3, W - 2 * L.m, 3, LIGHT)
+        bb:paintRect(L.m, header + L.m / 2 - 2, W - 2 * L.m, 2, BLACK)
         bb:paintRect(L.m, header + L.m / 2 - 6, math.floor((W - 2 * L.m) * (total - left) / total), 9, BLACK)
     else
-        bb:paintRect(L.m, header + L.m / 2 - 3, W - 2 * L.m, 3, LIGHT)
+        bb:paintRect(L.m, header + L.m / 2 - 2, W - 2 * L.m, 2, BLACK)
     end
 
     self:paintGrid(bb)
     self:paintWordList(bb)
 end
 
--- Markers, the live stroke and the letters; with `box`, only the letters inside it.
-function WordSearchWidget:paintGrid(bb, box)
+-- Letters, then a thick black line through every found word.
+function WordSearchWidget:paintGrid(bb)
     local g, L = self.game, self.layout
     local n, cell = g.n, L.cell
-    -- Highlights: all dark rims first, then the light fills, so crossing words merge into one marker.
-    local r = cell * 0.42
-    for pass = 1, 2 do
-        for i, w in ipairs(g.words) do
-            if w.found then
-                local x1, y1 = self:cellCenter(w.r1, w.c1)
-                local x2, y2 = self:cellCenter(w.r2, w.c2)
-                if i == self.flash then
-                    if pass == 1 then capsule(bb, x1, y1, x2, y2, r, BLACK) end
-                elseif pass == 1 then
-                    capsule(bb, x1, y1, x2, y2, r, DARK)
-                else
-                    capsule(bb, x1, y1, x2, y2, r - 4, LIGHT)
-                end
-            end
-        end
-    end
-    local flash_cells = {}
-    if self.flash then
-        local w = g.words[self.flash]
-        local steps = math.max(math.abs(w.r2 - w.r1), math.abs(w.c2 - w.c1))
-        for k = 0, steps do
-            flash_cells[(w.r1 + k * (w.r2 - w.r1) / steps) * 100 + w.c1 + k * (w.c2 - w.c1) / steps] = true
-        end
-    end
-    local s = self.stroke
-    if s and s.er then
-        local x1, y1 = self:cellCenter(s.r, s.c)
-        local x2, y2 = self:cellCenter(s.er, s.ec)
-        capsule(bb, x1, y1, x2, y2, r + 2, BLACK)
-        capsule(bb, x1, y1, x2, y2, r - 4, WHITE)
-    end
-
     local px = cell * 0.56
-    local r1, r2, c1, c2 = 1, n, 1, n
-    if box then
-        local L = self.layout
-        r1 = math.max(1, math.floor((box.y - L.gy) / cell) + 1)
-        r2 = math.min(n, math.floor((box.y + box.h - L.gy) / cell) + 1)
-        c1 = math.max(1, math.floor((box.x - L.gx) / cell) + 1)
-        c2 = math.min(n, math.floor((box.x + box.w - L.gx) / cell) + 1)
-    end
-    for rr = r1, r2 do
-        for cc = c1, c2 do
+    for rr = 1, n do
+        for cc = 1, n do
             local x, y = self:cellCenter(rr, cc)
-            textCentered(bb, Logic.letter(g, rr, cc), x, y, px, true, flash_cells[rr * 100 + cc] and WHITE or BLACK)
+            textCentered(bb, Logic.letter(g, rr, cc), x, y, px, true, BLACK)
         end
     end
-
+    local r = math.max(4, cell * 0.075)
+    local over = cell * 0.32
+    for _, w in ipairs(g.words) do
+        if w.found then
+            local x1, y1 = self:cellCenter(w.r1, w.c1)
+            local x2, y2 = self:cellCenter(w.r2, w.c2)
+            local dx, dy = x2 - x1, y2 - y1
+            local len = math.sqrt(dx * dx + dy * dy)
+            local ux, uy = dx / len, dy / len
+            capsule(bb, x1 - ux * over, y1 - uy * over, x2 + ux * over, y2 + uy * over, r, BLACK)
+        end
+    end
 end
 
 function WordSearchWidget:paintWordList(bb)
@@ -439,8 +443,9 @@ function WordSearchWidget:paintWordList(bb)
         local col, row = math.floor((i - 1) / rows), (i - 1) % rows
         local x, cy = x0 + col * colw, y0 + row * lh + lh / 2
         if w.found then
-            text(bb, w.w, x, cy, px, false, GRAY)
-            bb:paintRect(math.floor(x - 4), math.floor(cy - 2), math.floor(textWidth(w.w, px, false) + 8), 4, DARK)
+            text(bb, w.w, x, cy, px, false, BLACK)
+            local sw = math.max(4, math.floor(px * 0.14))
+            bb:paintRect(math.floor(x - 6), math.floor(cy - sw / 2), math.floor(textWidth(w.w, px, false) + 12), sw, BLACK)
         else
             text(bb, w.w, x, cy, px, true, BLACK)
         end
@@ -458,7 +463,7 @@ function WordSearchWidget:paintWin(bb)
         if kind == 1 then
             bb:paintCircle(x, y, s, BLACK)
         elseif kind == 2 then
-            bb:paintRect(x, y, s * 2, s, DARK)
+            bb:paintRect(x, y, s * 2, s, BLACK)
         else
             bb:paintCircle(x, y, s, BLACK, 4)
         end
@@ -485,7 +490,7 @@ function WordSearchWidget:paintWin(bb)
     textCentered(bb, clock(g.elapsed or 0), W / 2, y, t * 0.75, true)
     y = y + t * 0.8
     textCentered(bb, g.theme .. "  ·  " .. Logic.size(g.size).name .. "  ·  " .. #g.words .. " " .. _("words"),
-        W / 2, y, t * 0.36, false, DARK)
+        W / 2, y, t * 0.36, false, BLACK)
 
     local bh = math.floor(t * 0.95)
     local bw = math.floor((pw - 3 * t * 0.5) / 2)
@@ -519,62 +524,42 @@ function WordSearchWidget:startGame()
     self.mode = "game"
     self.layout = self:gameLayout()
     self.started = not self.game.done and os.time() or nil
-    UIManager:setDirty(self, "flashui")
+    UIManager:setDirty(self, "ui")
 end
 
 function WordSearchWidget:newGame(size_key)
     local last = self.game and self.game.theme
     self.game = Logic.generate(THEMES, size_key, setting("diagonals", true), os.time(), last)
-    self:clearTimers()
     self:save()
     self:startGame()
 end
 
 function WordSearchWidget:goHome()
     self:save()
-    self:clearTimers()
     self.started = nil
     self.mode = "home"
     self.stroke = nil
-    UIManager:setDirty(self, "flashui")
-end
-
-function WordSearchWidget:clearTimers()
-    if self.flash_cb then UIManager:unschedule(self.flash_cb) end
-    if self.cheer_cb then UIManager:unschedule(self.cheer_cb) end
-    self.flash, self.cheer = nil, nil
+    UIManager:setDirty(self, "ui")
 end
 
 function WordSearchWidget:found(i)
     local g = self.game
     g.words[i].found = true
-    self:clearTimers()
-    self.flash = i
-    self.cheer = CHEERS[math.random(#CHEERS)]
     if Logic.remaining(g) == 0 then
         g.done = true
         self:tick()
         self.started = nil
     end
     self:save()
-    UIManager:setDirty(self, "ui")
-    self.flash_cb = function()
-        self.flash = nil
-        UIManager:setDirty(self, g.done and "flashui" or "ui")
-    end
-    UIManager:scheduleIn(FLASH_TIME, self.flash_cb)
-    self.cheer_cb = function()
-        self.cheer = nil
-        UIManager:setDirty(self, "ui")
-    end
-    UIManager:scheduleIn(CHEER_TIME, self.cheer_cb)
-    -- Disk write after the screen work, so it never delays the marker.
-    UIManager:scheduleIn(FLASH_TIME + 0.1, function() G_reader_settings:flush() end)
+    -- Disk write after the screen work, so it never delays the line.
+    UIManager:scheduleIn(0.3, function() G_reader_settings:flush() end)
 end
 
 -- Strokes -------------------------------------------------------------------------------------------
--- Stroke feedback skips UIManager: the box is painted off screen, blitted into the framebuffer and
--- refreshed with A2 at once. A full repaint plus UIManager's queue is what makes a drag feel late.
+-- The finger draws like a pencil: each move paints a segment straight into the framebuffer and
+-- refreshes only that segment with A2, once per input batch. On release the page is re-rendered off
+-- screen (the trail gone, a found word crossed out) and only the touched boxes are copied and
+-- refreshed, again with A2. No UIManager repaint, no flash.
 
 function WordSearchWidget:strokeActive()
     return self.mode == "game" and self.game and not self.game.done
@@ -585,39 +570,47 @@ function WordSearchWidget:isOnTop()
     return stack[#stack] and stack[#stack].widget == self
 end
 
-function WordSearchWidget:drawNow(box, waveform)
-    box = box:intersect(self.dimen)
-    if box.w <= 0 or box.h <= 0 then return end
+-- Copies boxes of a fresh frame to the screen and refreshes each with A2.
+function WordSearchWidget:showBoxes(boxes)
     if not self:isOnTop() then
-        UIManager:setDirty(self, function() return "ui", box end)
+        UIManager:setDirty(self, "ui")
         return
     end
-    local bb = Blitbuffer.new(box.w, box.h, Screen.bb:getType())
-    bb:fill(WHITE)
-    self.ox, self.oy = box.x, box.y
-    self:paintGrid(bb, box)
-    self.ox, self.oy = 0, 0
-    Screen.bb:blitFrom(bb, box.x, box.y, 0, 0, box.w, box.h)
-    bb:free()
-    if waveform == "a2" then
-        Screen:refreshA2(box.x, box.y, box.w, box.h)
-    else
-        Screen:refreshUI(box.x, box.y, box.w, box.h)
+    self:renderFrame()
+    for _, box in ipairs(boxes) do
+        box = box:intersect(self.dimen)
+        if box.w > 0 and box.h > 0 then
+            binarize(self.frame, box)
+            Screen.bb:blitFrom(self.frame, box.x, box.y, box.x, box.y, box.w, box.h)
+            Screen:refreshA2(box.x, box.y, box.w, box.h)
+        end
     end
 end
 
--- Pan events arrive in batches; draw once per batch with the newest end.
-function WordSearchWidget:queueStrokeDraw(box)
-    self.stroke_box = self.stroke_box and self.stroke_box:combine(box) or box
-    if self.stroke_scheduled then return end
-    self.stroke_scheduled = true
-    self.stroke_cb = self.stroke_cb or function()
-        self.stroke_scheduled = false
-        local b = self.stroke_box
-        self.stroke_box = nil
-        if b then self:drawNow(b, "a2") end
-    end
-    UIManager:nextTick(self.stroke_cb)
+local function penBox(x1, y1, x2, y2)
+    local pad = PEN + 2
+    local x, y = math.floor(math.min(x1, x2)) - pad, math.floor(math.min(y1, y2)) - pad
+    return Geom:new{ x = x, y = y, w = math.ceil(math.abs(x2 - x1)) + 2 * pad, h = math.ceil(math.abs(y2 - y1)) + 2 * pad }
+end
+
+function WordSearchWidget:pen(x1, y1, x2, y2)
+    local s = self.stroke
+    if not self:isOnTop() then return end
+    capsule(Screen.bb, x1, y1, x2, y2, PEN, BLACK)
+    local box = penBox(x1, y1, x2, y2)
+    s.box = s.box and s.box:combine(box) or box
+    s.dirty = s.dirty and s.dirty:combine(box) or box
+    if s.scheduled then return end
+    s.scheduled = true
+    UIManager:nextTick(function()
+        s.scheduled = false
+        local d = s.dirty
+        s.dirty = nil
+        if d and self.stroke == s then
+            d = d:intersect(self.dimen)
+            Screen:refreshA2(d.x, d.y, d.w, d.h)
+        end
+    end)
 end
 
 function WordSearchWidget:onStrokeStart(pos)
@@ -628,9 +621,8 @@ function WordSearchWidget:onStrokeStart(pos)
         self.stroke = nil
         return false
     end
-    local r, c = math.floor(fy) + 1, math.floor(fx) + 1
-    self.stroke = { sx = fx, sy = fy, r = r, c = c, er = r, ec = c }
-    self:queueStrokeDraw(self:lineBox(r, c, r, c))
+    self.stroke = { sx = fx, sy = fy, x = pos.x, y = pos.y }
+    self:pen(pos.x, pos.y, pos.x, pos.y)
     return true
 end
 
@@ -638,11 +630,8 @@ function WordSearchWidget:onStrokeMove(pos)
     local s = self.stroke
     if not s or not pos then return false end
     s.ex, s.ey = self:toCells(pos)
-    local er, ec = Logic.lineEnd(self.game, s.r, s.c, s.ex, s.ey)
-    if er == s.er and ec == s.ec then return true end
-    local box = self:lineBox(s.r, s.c, er, ec):combine(self:lineBox(s.r, s.c, s.er, s.ec))
-    s.er, s.ec = er, ec
-    self:queueStrokeDraw(box)
+    self:pen(s.x, s.y, pos.x, pos.y)
+    s.x, s.y = pos.x, pos.y
     return true
 end
 
@@ -651,17 +640,24 @@ function WordSearchWidget:onStrokeEnd(pos)
     if not s then return false end
     if pos then s.ex, s.ey = self:toCells(pos) end
     self.stroke = nil
-    local box = self:lineBox(s.r, s.c, s.er, s.ec)
-    if self.stroke_box then box = box:combine(self.stroke_box) self.stroke_box = nil end
+    local boxes = {}
     local i = s.ex and Logic.snap(self.game, s.sx, s.sy, s.ex, s.ey)
-    if not i then
-        self:drawNow(box, "ui")
-        return true
+    local box = s.box
+    if i then
+        self:found(i)
+        local w = self.game.words[i]
+        local L = self.layout
+        local wb = self:lineBox(w.r1, w.c1, w.r2, w.c2)
+        box = box and box:combine(wb) or wb
+        if self.game.done then
+            UIManager:setDirty(self, "ui")
+            return true
+        end
+        boxes[#boxes + 1] = L.list
+        boxes[#boxes + 1] = Geom:new{ x = 0, y = 0, w = self.dimen.w, h = L.header + L.m }
     end
-    -- Black marker with white letters is pure black and white, so A2 shows it cleanly at once.
-    self:found(i)
-    local w = self.game.words[i]
-    self:drawNow(box:combine(self:lineBox(w.r1, w.c1, w.r2, w.c2)), "a2")
+    if box then table.insert(boxes, 1, box) end
+    self:showBoxes(boxes)
     return true
 end
 
@@ -688,7 +684,7 @@ function WordSearchWidget:onTap(pos)
     if self.stroke then
         local s = self.stroke
         self.stroke = nil
-        self:drawNow(self:lineBox(s.r, s.c, s.er, s.ec), "ui")
+        if s.box then self:showBoxes({ s.box }) end
     end
     for i = #self.hits, 1, -1 do
         local h = self.hits[i]
@@ -705,13 +701,16 @@ function WordSearchWidget:onFlushSettings()
 end
 
 function WordSearchWidget:onClose()
-    UIManager:close(self, "flashui")
+    UIManager:close(self, "ui")
     return true
 end
 
 function WordSearchWidget:onCloseWidget()
-    self:clearTimers()
     self:save()
+    if self.frame then
+        self.frame:free()
+        self.frame = nil
+    end
 end
 
 local WordSearch = WidgetContainer:extend{
@@ -728,7 +727,7 @@ function WordSearch:open()
         if w.widget.is_wordsearch then return w.widget end
     end
     local widget = WordSearchWidget:new{}
-    UIManager:show(widget, "flashui")
+    UIManager:show(widget, "ui")
     return widget
 end
 

@@ -143,22 +143,4 @@ function Logic.snap(game, sx, sy, ex, ey)
     return best
 end
 
--- The end cell of a stroke from cell (r, c) towards point (ex, ey), on the nearest allowed line.
-function Logic.lineEnd(game, r, c, ex, ey)
-    local dx, dy = ex - (c - 0.5), ey - (r - 0.5)
-    local len = math.sqrt(dx * dx + dy * dy)
-    if len < 0.5 then return r, c end
-    local step = game.diagonals and math.pi / 4 or math.pi / 2
-    local angle = math.floor(math.atan2(dy, dx) / step + 0.5) * step
-    local ux, uy = math.floor(math.cos(angle) + 0.5), math.floor(math.sin(angle) + 0.5)
-    local k = math.floor(((ux ~= 0 and uy ~= 0) and len / math.sqrt(2) or len) + 0.5)
-    local n = game.n
-    while k > 0 do
-        local r2, c2 = r + uy * k, c + ux * k
-        if r2 >= 1 and r2 <= n and c2 >= 1 and c2 <= n then return r2, c2 end
-        k = k - 1
-    end
-    return r, c
-end
-
 return Logic
