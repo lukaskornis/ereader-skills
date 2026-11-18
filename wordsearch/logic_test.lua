@@ -64,6 +64,51 @@ for _, diag in ipairs({ false, true }) do
     check(easy / total >= Logic.EASY_SHARE - 0.02, "easy share " .. easy / total .. (diag and " diag" or ""))
 end
 
+-- Decoys and filler never spell a listed word twice: each reads out of the grid exactly once, counted
+-- on every row, column and diagonal read both ways.
+local function lines(g)
+    local n, out = g.n, {}
+    local function walk(r, c, dr, dc)
+        local t = {}
+        while r >= 1 and r <= n and c >= 1 and c <= n do
+            t[#t + 1] = Logic.letter(g, r, c)
+            r, c = r + dr, c + dc
+        end
+        out[#out + 1] = table.concat(t)
+        out[#out + 1] = table.concat(t):reverse()
+    end
+    for i = 1, n do
+        walk(i, 1, 0, 1)
+        walk(1, i, 1, 0)
+        walk(i, 1, 1, 1)
+        walk(i, n, 1, -1)
+        if i > 1 then
+            walk(1, i, 1, 1)
+            walk(1, n - i + 1, 1, -1)
+        end
+    end
+    return out
+end
+for _, size in ipairs(Logic.SIZES) do
+    for seed = 1, 200 do
+        local g = Logic.generate(themes, size.key, seed % 2 == 0, seed)
+        local ls = lines(g)
+        for _, w in ipairs(g.words) do
+            local count = 0
+            for _, l in ipairs(ls) do
+                local at = 1
+                while true do
+                    local s = l:find(w.w, at, true)
+                    if not s then break end
+                    count, at = count + 1, s + 1
+                end
+            end
+            if w.w == w.w:reverse() then count = count / 2 end
+            check(count == 1, size.key .. " seed " .. seed .. " has " .. count .. " of " .. w.w)
+        end
+    end
+end
+
 -- Determinism: same seed, same board.
 local a, b = Logic.generate(themes, "big", true, 42), Logic.generate(themes, "big", true, 42)
 check(a.letters == b.letters and a.theme == b.theme, "seed 42 gives two boards")

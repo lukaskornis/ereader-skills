@@ -73,6 +73,57 @@ local function tryPlace(cells, n, word, dirs, rnd)
     end
 end
 
+-- Every place word reads out of cells (nil cells never match), along any of the eight lines. A
+-- palindrome reads both ways along the same cells, so only half the lines count for it.
+local function occurrences(cells, n, word)
+    local len, first = #word, word:sub(1, 1)
+    local dirs = word == word:reverse() and { ALL[1], ALL[2], ALL[5], ALL[7] } or ALL
+    local found = {}
+    for r = 1, n do
+        for c = 1, n do
+            if cells[(r - 1) * n + c] == first then
+                for _, d in ipairs(dirs) do
+                    local r2, c2 = r + d[1] * (len - 1), c + d[2] * (len - 1)
+                    if r2 >= 1 and r2 <= n and c2 >= 1 and c2 <= n then
+                        local k = 2
+                        while k <= len and cells[(r + d[1] * (k - 1) - 1) * n + c + d[2] * (k - 1)] == word:sub(k, k) do
+                            k = k + 1
+                        end
+                        if k > len then found[#found + 1] = { r, c, d[1], d[2] } end
+                    end
+                end
+            end
+        end
+    end
+    return found
+end
+
+local function anyRepeat(cells, n, words)
+    for _, w in ipairs(words) do
+        local occ = occurrences(cells, n, w.w)
+        if #occ > 1 then return w, occ end
+    end
+end
+
+-- Starts of listed words written into free lines, so the eye catches on near misses. Each is dropped
+-- again if it completes a second copy of any listed word.
+local function placeDecoys(cells, n, words, dirs, rnd)
+    local long = {}
+    for _, w in ipairs(words) do
+        if #w.w >= 4 then long[#long + 1] = w.w end
+    end
+    if #long == 0 then return end
+    for _ = 1, 2 + rnd(4) do
+        local word = long[rnd(#long)]
+        local part = word:sub(1, math.min(#word - 1, 2 + rnd(3)))
+        local before = {}
+        for k, v in pairs(cells) do before[k] = v end
+        if tryPlace(cells, n, part, dirs, rnd) and anyRepeat(cells, n, words) then
+            for k in pairs(cells) do cells[k] = before[k] end
+        end
+    end
+end
+
 -- Returns a game table, plain data only so it can be saved in KOReader's settings as is.
 function Logic.generate(themes, size_key, diagonals, seed, avoid_theme)
     local size = Logic.size(size_key)
@@ -101,15 +152,41 @@ function Logic.generate(themes, size_key, diagonals, seed, avoid_theme)
         if #words >= size.words then break end
         local dirs = k > size.words and all or k >= first_easy and EASY or hard
         -- A crowded board may have no room in the preferred directions; any direction beats a missing word.
+        local before = {}
+        for i, v in pairs(cells) do before[i] = v end
         local placed = tryPlace(cells, n, w, dirs, rnd) or (dirs ~= all and tryPlace(cells, n, w, all, rnd))
-        if placed then words[#words + 1] = placed end
+        if placed then
+            words[#words + 1] = placed
+            -- A word inside another (RED in REDWOOD) or crossing into a copy would read twice: skip it.
+            if anyRepeat(cells, n, words) then
+                words[#words] = nil
+                for i in pairs(cells) do cells[i] = before[i] end
+            end
+        end
     end
     table.sort(words, function(a, b) return a.w < b.w end)
+    placeDecoys(cells, n, words, all, rnd)
 
     local letters = {}
     for i = 1, n * n do
         local k = rnd(#FILL)
         letters[i] = cells[i] or FILL:sub(k, k)
+    end
+    -- Filler can spell a listed word a second time; the fixed cells never do, so a copy always holds
+    -- a filler cell to change.
+    while true do
+        local w, occ = anyRepeat(letters, n, words)
+        if not w then break end
+        local spot
+        for _, o in ipairs(occ) do
+            for k = 0, #w.w - 1 do
+                local i = (o[1] + o[3] * k - 1) * n + o[2] + o[4] * k
+                if not cells[i] then spot = i break end
+            end
+            if spot then break end
+        end
+        local k = rnd(#FILL)
+        letters[spot] = FILL:sub(k, k)
     end
     return {
         size = size_key, n = n, theme = theme.name, diagonals = diagonals and true or false,
