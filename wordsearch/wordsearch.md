@@ -19,9 +19,11 @@ KOReader plugin: English word search puzzles. Tools menu > Word search.
 - `wordsearch_game` in `G_reader_settings`: plain table (size, n, theme, letters, words with ends and found flags, elapsed seconds, done, seed). Saved after every find with a flush, on Menu and on close.
 - `wordsearch_diagonals`, `wordsearch_show_left`: switches, default on.
 
-## Refresh
-- Stroke outline: DU ("fast") on the box of the old and new line only; cleaned with "ui" on release.
-- Find: "ui"; win panel and mode changes: "flashui".
+## Refresh and latency
+- Stroke feedback skips UIManager: the touched box is painted into an off-screen buffer, blitted into the framebuffer and refreshed with A2 at once. Touch shows the start ring; pan batches draw once per tick. Box paint 9 to 17 ms on the Aura One (2026-11-18); panel A2 about 145 ms.
+- A find paints the black marker with white letters the same way (pure black and white, so A2 shows it clean), then a "ui" repaint brings back greys, header and list. The settings flush runs after the flash.
+- No match: the box is redrawn with a "ui" refresh. Mode changes and the win panel: "flashui".
+- Markers are filled row by row (`capsule`). paintCircle is per pixel: one board with diagonal markers took 3.8 s to paint; now a full game paint is 32 ms.
 
 ## Dev
 - Push and reload: `ink -d kobo reload wordsearch wordsearch/wordsearch.koplugin`. The first install needs `ink restart` to load the plugin.

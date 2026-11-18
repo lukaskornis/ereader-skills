@@ -56,21 +56,47 @@ local function textCentered(bb, s, cx, cy, px, bold, color)
     text(bb, s, cx - textWidth(s, px, bold) / 2, cy, px, bold, color)
 end
 
--- A round-ended stroke from (x1, y1) to (x2, y2): the marker highlight around a word.
+-- x' range where a * x' lies in [lo, hi]; a == 0 means all or nothing.
+local function solve(a, lo, hi)
+    if a == 0 then
+        if lo <= 0 and hi >= 0 then return -math.huge, math.huge end
+        return math.huge, -math.huge
+    end
+    if a > 0 then return lo / a, hi / a end
+    return hi / a, lo / a
+end
+
+-- A round-ended stroke from (x1, y1) to (x2, y2): the marker highlight around a word. Filled one row at
+-- a time from the stadium's span on that row; paintCircle is per pixel and took 3.8 s for one board.
 local function capsule(bb, x1, y1, x2, y2, r, color)
-    x1, y1, x2, y2, r = math.floor(x1), math.floor(y1), math.floor(x2), math.floor(y2), math.floor(r)
-    if y1 == y2 then
-        bb:paintRect(math.min(x1, x2), y1 - r, math.abs(x2 - x1), 2 * r + 1, color)
-    elseif x1 == x2 then
-        bb:paintRect(x1 - r, math.min(y1, y2), 2 * r + 1, math.abs(y2 - y1), color)
-    else
-        local steps = math.ceil(math.max(math.abs(x2 - x1), math.abs(y2 - y1)) / 3)
-        for i = 1, steps - 1 do
-            bb:paintCircle(math.floor(x1 + (x2 - x1) * i / steps), math.floor(y1 + (y2 - y1) * i / steps), r, color)
+    local dx, dy = x2 - x1, y2 - y1
+    local len = math.sqrt(dx * dx + dy * dy)
+    local ux, uy = 0, 0
+    if len > 0 then ux, uy = dx / len, dy / len end
+    local r2 = r * r
+    for y = math.floor(math.min(y1, y2) - r), math.ceil(math.max(y1, y2) + r) do
+        local yc = y + 0.5
+        local lo, hi = math.huge, -math.huge
+        local d1, d2 = yc - y1, yc - y2
+        if d1 * d1 <= r2 then
+            local h = math.sqrt(r2 - d1 * d1)
+            lo, hi = math.min(lo, x1 - h), math.max(hi, x1 + h)
+        end
+        if d2 * d2 <= r2 then
+            local h = math.sqrt(r2 - d2 * d2)
+            lo, hi = math.min(lo, x2 - h), math.max(hi, x2 + h)
+        end
+        if len > 0 then
+            local a1, b1 = solve(-uy, -r - d1 * ux, r - d1 * ux)
+            local a2, b2 = solve(ux, -d1 * uy, len - d1 * uy)
+            local a, b = math.max(a1, a2) + x1, math.min(b1, b2) + x1
+            if a <= b then lo, hi = math.min(lo, a), math.max(hi, b) end
+        end
+        if lo <= hi then
+            local xa = math.floor(lo + 0.5)
+            bb:paintRect(xa, y, math.floor(hi + 0.5) - xa, 1, color)
         end
     end
-    bb:paintCircle(x1, y1, r, color)
-    bb:paintCircle(x2, y2, r, color)
 end
 
 local function setting(key, default)
@@ -93,6 +119,7 @@ function WordSearchWidget:init()
     self.game = G_reader_settings:readSetting(SAVE_KEY)
     self.mode = "home"
     self.hits = {}
+    self.ox, self.oy = 0, 0
     local all = { ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1 }
     local function zone(id, ges, handler)
         return { id = "wordsearch_" .. id, ges = ges, screen_zone = all, handler = handler }
@@ -133,9 +160,10 @@ function WordSearchWidget:gameLayout()
     return L
 end
 
+-- ox, oy shift drawing into a box-sized buffer (drawNow).
 function WordSearchWidget:cellCenter(r, c)
     local L = self.layout
-    return L.gx + (c - 0.5) * L.cell, L.gy + (r - 0.5) * L.cell
+    return L.gx + (c - 0.5) * L.cell - self.ox, L.gy + (r - 0.5) * L.cell - self.oy
 end
 
 function WordSearchWidget:toCells(pos)
@@ -306,7 +334,6 @@ end
 function WordSearchWidget:paintGame(bb)
     local g, L = self.game, self.layout
     local W = self.dimen.w
-    local n, cell = g.n, L.cell
     local header = L.header
 
     -- Header: back, theme (or a cheer), words left.
@@ -332,6 +359,14 @@ function WordSearchWidget:paintGame(bb)
         bb:paintRect(L.m, header + L.m / 2 - 3, W - 2 * L.m, 3, LIGHT)
     end
 
+    self:paintGrid(bb)
+    self:paintWordList(bb)
+end
+
+-- Markers, the live stroke and the letters; with `box`, only the letters inside it.
+function WordSearchWidget:paintGrid(bb, box)
+    local g, L = self.game, self.layout
+    local n, cell = g.n, L.cell
     -- Highlights: all dark rims first, then the light fills, so crossing words merge into one marker.
     local r = cell * 0.42
     for pass = 1, 2 do
@@ -366,14 +401,21 @@ function WordSearchWidget:paintGame(bb)
     end
 
     local px = cell * 0.56
-    for rr = 1, n do
-        for cc = 1, n do
+    local r1, r2, c1, c2 = 1, n, 1, n
+    if box then
+        local L = self.layout
+        r1 = math.max(1, math.floor((box.y - L.gy) / cell) + 1)
+        r2 = math.min(n, math.floor((box.y + box.h - L.gy) / cell) + 1)
+        c1 = math.max(1, math.floor((box.x - L.gx) / cell) + 1)
+        c2 = math.min(n, math.floor((box.x + box.w - L.gx) / cell) + 1)
+    end
+    for rr = r1, r2 do
+        for cc = c1, c2 do
             local x, y = self:cellCenter(rr, cc)
             textCentered(bb, Logic.letter(g, rr, cc), x, y, px, true, flash_cells[rr * 100 + cc] and WHITE or BLACK)
         end
     end
 
-    self:paintWordList(bb)
 end
 
 function WordSearchWidget:paintWordList(bb)
@@ -515,7 +557,6 @@ function WordSearchWidget:found(i)
         self.started = nil
     end
     self:save()
-    G_reader_settings:flush()
     UIManager:setDirty(self, "ui")
     self.flash_cb = function()
         self.flash = nil
@@ -527,12 +568,56 @@ function WordSearchWidget:found(i)
         UIManager:setDirty(self, "ui")
     end
     UIManager:scheduleIn(CHEER_TIME, self.cheer_cb)
+    -- Disk write after the screen work, so it never delays the marker.
+    UIManager:scheduleIn(FLASH_TIME + 0.1, function() G_reader_settings:flush() end)
 end
 
 -- Strokes -------------------------------------------------------------------------------------------
+-- Stroke feedback skips UIManager: the box is painted off screen, blitted into the framebuffer and
+-- refreshed with A2 at once. A full repaint plus UIManager's queue is what makes a drag feel late.
 
 function WordSearchWidget:strokeActive()
     return self.mode == "game" and self.game and not self.game.done
+end
+
+function WordSearchWidget:isOnTop()
+    local stack = UIManager._window_stack
+    return stack[#stack] and stack[#stack].widget == self
+end
+
+function WordSearchWidget:drawNow(box, waveform)
+    box = box:intersect(self.dimen)
+    if box.w <= 0 or box.h <= 0 then return end
+    if not self:isOnTop() then
+        UIManager:setDirty(self, function() return "ui", box end)
+        return
+    end
+    local bb = Blitbuffer.new(box.w, box.h, Screen.bb:getType())
+    bb:fill(WHITE)
+    self.ox, self.oy = box.x, box.y
+    self:paintGrid(bb, box)
+    self.ox, self.oy = 0, 0
+    Screen.bb:blitFrom(bb, box.x, box.y, 0, 0, box.w, box.h)
+    bb:free()
+    if waveform == "a2" then
+        Screen:refreshA2(box.x, box.y, box.w, box.h)
+    else
+        Screen:refreshUI(box.x, box.y, box.w, box.h)
+    end
+end
+
+-- Pan events arrive in batches; draw once per batch with the newest end.
+function WordSearchWidget:queueStrokeDraw(box)
+    self.stroke_box = self.stroke_box and self.stroke_box:combine(box) or box
+    if self.stroke_scheduled then return end
+    self.stroke_scheduled = true
+    self.stroke_cb = self.stroke_cb or function()
+        self.stroke_scheduled = false
+        local b = self.stroke_box
+        self.stroke_box = nil
+        if b then self:drawNow(b, "a2") end
+    end
+    UIManager:nextTick(self.stroke_cb)
 end
 
 function WordSearchWidget:onStrokeStart(pos)
@@ -543,7 +628,9 @@ function WordSearchWidget:onStrokeStart(pos)
         self.stroke = nil
         return false
     end
-    self.stroke = { sx = fx, sy = fy, r = math.floor(fy) + 1, c = math.floor(fx) + 1 }
+    local r, c = math.floor(fy) + 1, math.floor(fx) + 1
+    self.stroke = { sx = fx, sy = fy, r = r, c = c, er = r, ec = c }
+    self:queueStrokeDraw(self:lineBox(r, c, r, c))
     return true
 end
 
@@ -553,10 +640,9 @@ function WordSearchWidget:onStrokeMove(pos)
     s.ex, s.ey = self:toCells(pos)
     local er, ec = Logic.lineEnd(self.game, s.r, s.c, s.ex, s.ey)
     if er == s.er and ec == s.ec then return true end
-    local box = self:lineBox(s.r, s.c, er, ec)
-    if s.er then box = box:combine(self:lineBox(s.r, s.c, s.er, s.ec)) end
+    local box = self:lineBox(s.r, s.c, er, ec):combine(self:lineBox(s.r, s.c, s.er, s.ec))
     s.er, s.ec = er, ec
-    UIManager:setDirty(self, function() return "fast", box end)
+    self:queueStrokeDraw(box)
     return true
 end
 
@@ -565,13 +651,17 @@ function WordSearchWidget:onStrokeEnd(pos)
     if not s then return false end
     if pos then s.ex, s.ey = self:toCells(pos) end
     self.stroke = nil
-    local box = s.er and self:lineBox(s.r, s.c, s.er, s.ec)
+    local box = self:lineBox(s.r, s.c, s.er, s.ec)
+    if self.stroke_box then box = box:combine(self.stroke_box) self.stroke_box = nil end
     local i = s.ex and Logic.snap(self.game, s.sx, s.sy, s.ex, s.ey)
-    if i then
-        self:found(i)
-    elseif box then
-        UIManager:setDirty(self, function() return "ui", box end)
+    if not i then
+        self:drawNow(box, "ui")
+        return true
     end
+    -- Black marker with white letters is pure black and white, so A2 shows it cleanly at once.
+    self:found(i)
+    local w = self.game.words[i]
+    self:drawNow(box:combine(self:lineBox(w.r1, w.c1, w.r2, w.c2)), "a2")
     return true
 end
 
@@ -598,7 +688,7 @@ function WordSearchWidget:onTap(pos)
     if self.stroke then
         local s = self.stroke
         self.stroke = nil
-        if s.er then UIManager:setDirty(self, function() return "ui", self:lineBox(s.r, s.c, s.er, s.ec) end) end
+        self:drawNow(self:lineBox(s.r, s.c, s.er, s.ec), "ui")
     end
     for i = #self.hits, 1, -1 do
         local h = self.hits[i]
