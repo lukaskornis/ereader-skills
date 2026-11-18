@@ -1,4 +1,4 @@
-# Claude chat (Kobo verified 2026-11-18 with a mock relay; Kindle unverified)
+# Claude chat (Kobo verified 2026-11-18 with real replies; Kindle unverified)
 
 Chat with Claude from the reader on the Claude subscription. Each chat is a book: one HTML file in `<home>/Claude`, opened in the normal reader with its fonts, margins, page turns, and a table of contents of the questions.
 

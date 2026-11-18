@@ -163,7 +163,8 @@ def login():
         text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\r|\n", "", f.read())
     os.unlink(capture)
     match = re.search(r"sk-ant-oat[A-Za-z0-9_\-]+", text)
-    token = match.group(0) if match else getpass.getpass("Paste the token it printed: ").strip()
+    # The token wraps across lines, so newlines are dropped; that glues the next sentence onto it.
+    token = match.group(0).split("Store")[0] if match else getpass.getpass("Paste the token it printed: ").strip()
     if not token:
         die("No token.")
     subprocess.run(["security", "add-generic-password", "-U", "-a", os.environ.get("USER", "me"),
