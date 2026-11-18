@@ -8,7 +8,7 @@ KOReader plugin: English word search puzzles. Tools menu > Word search.
 - Switches: Diagonal words (new boards place words on all eight lines, else the four straight ones, backwards included), Show progress (a row of hollow squares under the theme that fill as words are found), Hide word list (the list then shows only found words).
 - Header: back chevron top left, theme, progress squares.
 - Draw across a word: a pencil line follows the finger. On release the trail vanishes and the stroke snaps to the unfound word whose ends best match it, either way round, forgiving max(1.6, 0.3 × length) cells in total end error.
-- A find gets a thick black line through its letters shaped like the drawn stroke: the stroke is fitted onto the word (`Logic.fitStroke`), its wobble scaled down only as far as needed to stay within 0.22 cells. In the list the word keeps its font and gets a hand-drawn strike, each a different wobble. All found: confetti, SOLVED tiles, time, stars (under 20 s a word 3, under 40 s 2).
+- A find gets a thin black line (radius 4% of a cell, letters stay readable) through its letters shaped like the drawn stroke: the stroke is fitted onto the word (`Logic.fitStroke`), its wobble scaled down only as far as needed to stay within 0.22 cells. In the list the word keeps its font and gets a hand-drawn strike, each a different wobble. All found: confetti, SOLVED tiles, time, stars (under 20 s a word 3, under 40 s 2).
 - No greys anywhere (owner's call, 2026-11-18): every frame is thresholded to pure black and white, so A2 shows it exactly and nothing needs a flash.
 - Menu goes back home. Closing (✕ on home, or KOReader exit through FlushSettings) saves the board.
 
@@ -26,7 +26,7 @@ KOReader plugin: English word search puzzles. Tools menu > Word search.
 ## Refresh and latency
 - The page is rendered into an off-screen BB8 frame, then only the part shown is thresholded (< 0xA0 black) and copied to the screen.
 - Pencil: each pan segment is painted straight into `Screen.bb` (row-filled stroke, radius `PEN`) and its box refreshed with A2, one refresh per input batch (`nextTick`).
-- Release: frame re-rendered (84 ms for Huge on the Aura One), then the trail plus word box, the word list and the header are copied and refreshed with A2. No UIManager repaint, no flash. Mode changes, the win panel and the first show use "ui" (no flash).
+- Release: frame re-rendered (84 ms for Huge on the Aura One), then the trail plus word box, the word list and the header are copied and refreshed with DU (A2 left a grey ghost of a missed trail). A new touch or a tap first wipes any trail whose gesture never sent a release. No UIManager repaint, no flash. Mode changes, the win panel and the first show use "ui" (no flash).
 - Markers are filled row by row (`capsule`). paintCircle is per pixel: one board took 3.8 s with chained circles.
 
 ## Dev

@@ -1,8 +1,8 @@
 --[[
 Word search: one full-screen widget that paints itself with Blitbuffer. Two modes, "home" (continue,
 new board by size, toggles) and "game" (grid, word list, a win panel on top when solved).
-A stroke draws a pencil trail under the finger (A2, segment boxes only); on release it snaps to the
-nearest unfound word (logic.lua), which gets a thick black line through it. The board is saved in G_reader_settings after every find and
+A stroke draws a pencil trail under the finger (A2, segment boxes only); on release (DU) it snaps to the
+nearest unfound word (logic.lua), which gets a thin black line through it. The board is saved in G_reader_settings after every find and
 on close, so the home screen can offer Continue.
 ]]
 local Blitbuffer = require("ffi/blitbuffer")
@@ -443,7 +443,7 @@ function WordSearchWidget:paintGrid(bb)
             textCentered(bb, Logic.letter(g, rr, cc), x, y, px, true, BLACK)
         end
     end
-    local r = math.max(4, cell * 0.075)
+    local r = math.max(2, cell * 0.04)
     for _, w in ipairs(g.words) do
         if w.found then
             local pts = Logic.strokePoints(w, 0.32)
@@ -487,7 +487,7 @@ function WordSearchWidget:paintWordList(bb)
         if w.found then
             local tw = textWidth(w.w, px, true)
             local tilt = px * 0.14 * (i % 2 == 0 and 1 or -1)
-            scribble(bb, x - px * 0.2, cy + tilt, x + tw + px * 0.2, cy - tilt, math.max(3, px * 0.08), px * 0.32, i)
+            scribble(bb, x - px * 0.2, cy + tilt, x + tw + px * 0.2, cy - tilt, math.max(2, px * 0.05), px * 0.32, i)
         end
     end
 end
@@ -605,7 +605,8 @@ end
 -- The finger draws like a pencil: each move paints a segment straight into the framebuffer and
 -- refreshes only that segment with A2, once per input batch. On release the page is re-rendered off
 -- screen (the trail gone, a found word crossed out) and only the touched boxes are copied and
--- refreshed, again with A2. No UIManager repaint, no flash.
+-- refreshed with DU, which clears the trail without the grey ghost A2 leaves. No UIManager repaint,
+-- no flash.
 
 function WordSearchWidget:strokeActive()
     return self.mode == "game" and self.game and not self.game.done
@@ -616,7 +617,7 @@ function WordSearchWidget:isOnTop()
     return stack[#stack] and stack[#stack].widget == self
 end
 
--- Copies boxes of a fresh frame to the screen and refreshes each with A2.
+-- Copies boxes of a fresh frame to the screen and refreshes each with DU.
 function WordSearchWidget:showBoxes(boxes)
     if not self:isOnTop() then
         UIManager:setDirty(self, "ui")
@@ -628,7 +629,7 @@ function WordSearchWidget:showBoxes(boxes)
         if box.w > 0 and box.h > 0 then
             binarize(self.frame, box)
             Screen.bb:blitFrom(self.frame, box.x, box.y, box.x, box.y, box.w, box.h)
-            Screen:refreshA2(box.x, box.y, box.w, box.h)
+            Screen:refreshFast(box.x, box.y, box.w, box.h)
         end
     end
 end
@@ -659,12 +660,20 @@ function WordSearchWidget:pen(x1, y1, x2, y2)
     end)
 end
 
+-- Wipes the trail of a stroke whose gesture ended without a release event.
+function WordSearchWidget:dropStroke()
+    local s = self.stroke
+    if not s then return end
+    self.stroke = nil
+    if s.box then self:showBoxes({ s.box }) end
+end
+
 function WordSearchWidget:onStrokeStart(pos)
     if not self:strokeActive() then return false end
+    self:dropStroke()
     local fx, fy = self:toCells(pos)
     local n = self.game.n
     if fx < 0 or fy < 0 or fx >= n or fy >= n then
-        self.stroke = nil
         return false
     end
     self.stroke = { sx = fx, sy = fy, x = pos.x, y = pos.y, pts = { { fx, fy } } }
@@ -730,11 +739,7 @@ function WordSearchWidget:onSwipe(ges)
 end
 
 function WordSearchWidget:onTap(pos)
-    if self.stroke then
-        local s = self.stroke
-        self.stroke = nil
-        if s.box then self:showBoxes({ s.box }) end
-    end
+    self:dropStroke()
     for i = #self.hits, 1, -1 do
         local h = self.hits[i]
         if pos.x >= h.x and pos.x < h.x + h.w and pos.y >= h.y and pos.y < h.y + h.h then
