@@ -11,6 +11,7 @@ book they start a new chat about the passage.
 local Blitbuffer = require("ffi/blitbuffer")
 local ButtonDialog = require("ui/widget/buttondialog")
 local ButtonTable = require("ui/widget/buttontable")
+local ConfirmBox = require("ui/widget/confirmbox")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local DataStorage = require("datastorage")
 local Device = require("device")
@@ -737,11 +738,13 @@ local function listChats()
     return chats
 end
 
--- Taps on the plain rows of a full-screen pane: each target is a FrameContainer, placed once painted.
-local function tapTarget(targets, pos)
+-- Taps (or holds, kind "hold") on the plain rows of a full-screen pane: each target is a FrameContainer, placed
+-- once painted.
+local function tapTarget(targets, pos, kind)
     for _, target in ipairs(targets) do
-        if target.frame.dimen and pos:intersectWith(target.frame.dimen) then
-            target.action()
+        local action = target[kind or "action"]
+        if action and target.frame.dimen and pos:intersectWith(target.frame.dimen) then
+            action()
             return true
         end
     end
@@ -751,6 +754,7 @@ end
 local ChatsWindow = InputContainer:extend{
     on_new = nil,
     on_open = nil, -- function(path)
+    on_hold = nil, -- function(chat)
     on_settings = nil,
     on_close = nil,
     covers_fullscreen = true,
@@ -766,6 +770,7 @@ function ChatsWindow:init()
     self.page = 1
     self.ges_events = {
         Tap = { GestureRange:new{ ges = "tap", range = self.dimen } },
+        Hold = { GestureRange:new{ ges = "hold", range = self.dimen } },
         Swipe = { GestureRange:new{ ges = "swipe", range = self.dimen } },
     }
     self:reload()
@@ -784,10 +789,10 @@ function ChatsWindow:rebuild()
     UIManager:setDirty(self, "ui")
 end
 
-function ChatsWindow:frameRow(height, widget, action)
+function ChatsWindow:frameRow(height, widget, action, hold)
     local frame = FrameContainer:new{ bordersize = 0, padding = 0,
         LeftContainer:new{ dimen = Geom:new{ w = self.inner_w, h = height }, widget } }
-    table.insert(self.targets, { frame = frame, action = action })
+    table.insert(self.targets, { frame = frame, action = action, hold = hold })
     return frame
 end
 
@@ -822,7 +827,7 @@ function ChatsWindow:build()
             LeftContainer:new{ dimen = dimen, TextWidget:new{ text = chat.title, face = self.title_face,
                 max_width = self.inner_w - date:getSize().w - Screen:scaleBySize(12) } },
             RightContainer:new{ dimen = dimen, date },
-        }, function() self.on_open(chat.path) end))
+        }, function() self.on_open(chat.path) end, function() self.on_hold(chat) end))
     end
     local footer = CenterContainer:new{
         dimen = Geom:new{ w = width, h = footer_h },
@@ -846,6 +851,11 @@ end
 
 function ChatsWindow:onTap(_, ges)
     tapTarget(self.targets, ges.pos)
+    return true
+end
+
+function ChatsWindow:onHold(_, ges)
+    tapTarget(self.targets, ges.pos, "hold")
     return true
 end
 
@@ -1087,11 +1097,63 @@ function ClaudeChat:open()
     window = ChatsWindow:new{
         on_new = function() self:askNewChat() end,
         on_open = function(path) self:openChatView(path) end,
+        on_hold = function(chat) self:chatMenu(chat) end,
         on_settings = function() self:showSettings() end,
         on_close = function() self:closeChats() end,
     }
     self.chats_window = window
     UIManager:show(window, "full")
+end
+
+-- Hold on a chat in the chats window: rename it (the title in its state; the file keeps its name and date) or
+-- delete it.
+function ClaudeChat:chatMenu(chat)
+    local dialog
+    dialog = ButtonDialog:new{
+        title = chat.title,
+        buttons = {
+            { { text = _("Rename"), callback = function()
+                UIManager:close(dialog)
+                self:renameChat(chat)
+            end } },
+            { { text = _("Delete"), callback = function()
+                UIManager:close(dialog)
+                UIManager:show(ConfirmBox:new{
+                    text = T(_("Delete this chat?\n\n%1"), chat.title),
+                    ok_text = _("Delete"),
+                    ok_callback = function()
+                        require("apps/filemanager/filemanager"):deleteFile(chat.path, true)
+                        if self.chats_window then self.chats_window:reload() end
+                    end,
+                })
+            end } },
+        },
+    }
+    UIManager:show(dialog)
+end
+
+function ClaudeChat:renameChat(chat)
+    local dialog
+    dialog = InputDialog:new{
+        title = _("Rename chat"),
+        input = chat.title,
+        buttons = {{
+            { text = _("Cancel"), id = "close", callback = function() UIManager:close(dialog) end },
+            { text = _("Rename"), is_enter_default = true, callback = function()
+                local title = util.trim(dialog:getInputText())
+                UIManager:close(dialog)
+                local state = loadChat(chat.path)
+                if title == "" or not state then return end
+                state.title = title
+                local mtime = lfs.attributes(chat.path, "modification")
+                saveChat(chat.path, state)
+                lfs.touch(chat.path, mtime, mtime) -- keep its place in the newest-first list
+                if self.chats_window then self.chats_window:reload() end
+            end },
+        }},
+    }
+    UIManager:show(dialog)
+    dialog:onShowKeyboard()
 end
 
 function ClaudeChat:closeChats()

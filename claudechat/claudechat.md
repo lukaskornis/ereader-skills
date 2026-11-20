@@ -14,6 +14,7 @@ Chat with Claude from the reader on the Claude subscription. Each chat is one HT
 - Replies may hold tables, inline SVG diagrams and photos from the web (the relay fetches and embeds them, so the reader needs no web access; images it cannot fetch are dropped). In the chat view a diagram fills the text width (height from its viewBox, at most 80% of a page), and a figure that does not fit the rest of a page moves whole to the next one, since MuPDF would otherwise squeeze it to fit.
 - In the book, the same steering links sit at the end; tapping one opens the chat view with the new reply.
 - Select text: hold a word (dictionary popup) or hold and drag a phrase (highlight dialog). Both get Explain simply, More on that, Etymology, Similar concepts. The phrase and about 25 words around it go to Claude. In a chat it continues the chat; in any other book it starts a new chat about the passage, named after the book.
+- Hold a chat in the chats window for Rename (changes the title inside the file; name and date stay, so its place in the list does too) or Delete (asks first; removes the file and its sidecar).
 - Chats are plain files: rename, move or delete them in the file browser. The state rides inside the file, so a moved chat still continues.
 
 ## How it works
