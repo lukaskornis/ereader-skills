@@ -10,6 +10,7 @@ book they start a new chat about the passage.
 ]]
 local Blitbuffer = require("ffi/blitbuffer")
 local ButtonDialog = require("ui/widget/buttondialog")
+local ButtonTable = require("ui/widget/buttontable")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local DataStorage = require("datastorage")
 local Device = require("device")
@@ -18,18 +19,23 @@ local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
 local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
+local IconButton = require("ui/widget/iconbutton")
 local InfoMessage = require("ui/widget/infomessage")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local InputDialog = require("ui/widget/inputdialog")
 local JSON = require("json")
 local LeftContainer = require("ui/widget/container/leftcontainer")
+local LineWidget = require("ui/widget/linewidget")
 local NetworkMgr = require("ui/network/manager")
 local OverlapGroup = require("ui/widget/overlapgroup")
 local RightContainer = require("ui/widget/container/rightcontainer")
+local Size = require("ui/size")
+local TextBoxWidget = require("ui/widget/textboxwidget")
 local TextWidget = require("ui/widget/textwidget")
 local TitleBar = require("ui/widget/titlebar")
 local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
+local VerticalSpan = require("ui/widget/verticalspan")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local ffi = require("ffi")
 local ffiutil = require("ffi/util")
@@ -53,6 +59,8 @@ local EFFORTS = { { id = "low", text = "Low" }, { id = "medium", text = "Med" },
                   { id = "max", text = "Max" } }
 local DEFAULT_MODEL = "sonnet"
 local DEFAULT_EFFORT = "medium"
+local SERIF = "NotoSerif-Regular.ttf"
+local SERIF_BOLD = "NotoSerif-Bold.ttf"
 
 local STEER = {
     { id = "deeper", text = _("Go deeper"),
@@ -313,6 +321,19 @@ local function shown(cfg, key)
     return cfg[key] ~= false
 end
 
+-- A gear left of the title bar's close button; TitleBar itself holds one icon per side. Inserted first, it gets
+-- taps before the close button's wide tap zone.
+local function addGear(title_bar, callback)
+    local size = Screen:scaleBySize(G_defaults:readSetting("DGENERIC_ICON_SIZE") * title_bar.right_icon_size_ratio)
+    local pad = title_bar.button_padding
+    local gear = IconButton:new{
+        icon = "appbar.settings", width = size, height = size, padding = pad,
+        callback = callback, show_parent = title_bar.show_parent,
+    }
+    gear.overlap_offset = { title_bar.width - 2 * size - 4 * pad - Screen:scaleBySize(8), 0 }
+    table.insert(title_bar, 1, gear)
+end
+
 -- Full-screen chat: one question and its reply at a time, text only. Page turns run through a reply and on into
 -- the next or previous one. A tap on the top edge brings up the header; the footer shows the page and usage.
 -- While Claude writes, the new reply grows in place without ever moving the page being read.
@@ -321,11 +342,23 @@ local ChatView = InputContainer:extend{
     on_steer = nil, -- function(id)
     on_book = nil, -- function(exchange)
     on_close = nil,
+    on_settings = nil,
     covers_fullscreen = true,
 }
 
-function ChatView:init()
+-- Text size, spacing and margin from the settings, and the body size they leave.
+function ChatView:layout()
     local cfg = config()
+    self.margin = Screen:scaleBySize(textSetting(cfg, "margin"))
+    self.font_size = Screen:scaleBySize(textSetting(cfg, "text_size"))
+    self.css = VIEW_CSS .. string.format("body { line-height: %.2f; }", textSetting(cfg, "line_spacing"))
+    self.footer_face = Font:getFace("smallffont")
+    self.footer_height = 2 * self.footer_face.size
+    self.body_width = Screen:getWidth() - 2 * self.margin
+    self.body_height = Screen:getHeight() - self.margin - self.footer_height
+end
+
+function ChatView:init()
     local width, height = Screen:getWidth(), Screen:getHeight()
     self.dimen = Geom:new{ x = 0, y = 0, w = width, h = height }
     self.title_bar = TitleBar:new{
@@ -340,16 +373,11 @@ function ChatView:init()
         show_parent = self,
         close_callback = function() self.on_close() end,
     }
+    addGear(self.title_bar, function() self.on_settings() end)
     self.header = FrameContainer:new{
         background = Blitbuffer.COLOR_WHITE, bordersize = 0, padding = 0, self.title_bar,
     }
-    self.margin = Screen:scaleBySize(textSetting(cfg, "margin"))
-    self.font_size = Screen:scaleBySize(textSetting(cfg, "text_size"))
-    self.css = VIEW_CSS .. string.format("body { line-height: %.2f; }", textSetting(cfg, "line_spacing"))
-    self.footer_face = Font:getFace("smallffont")
-    self.footer_height = 2 * self.footer_face.size
-    self.body_width = width - 2 * self.margin
-    self.body_height = height - self.margin - self.footer_height
+    self:layout()
     self.body = FrameContainer:new{
         bordersize = 0, padding = self.margin, padding_bottom = 0, self:newBox(""),
     }
@@ -585,8 +613,329 @@ function ChatView:endPending()
     self:updateSubtitle()
 end
 
+-- The settings changed: lay the exchange in view out again from its first page.
+function ChatView:applySettings()
+    self:layout()
+    self.body.padding = self.margin
+    if self:lastIndex() > 0 then self:replaceBox(self.index, 1):free() end
+    self:updateFooter()
+    UIManager:setDirty(self, "full")
+end
+
 function ChatView:onCloseWidget()
     self.body[1]:free()
+end
+
+-- Today's chats show the time, older ones the day: "17:52", "9 Nov".
+local function shortDate(t)
+    if os.date("%Y%m%d", t) == os.date("%Y%m%d") then return os.date("%H:%M", t) end
+    return tonumber(os.date("%d", t)) .. os.date(" %b", t)
+end
+
+-- Every chat file, newest first, titled from its state.
+local function listChats()
+    local dir = chatsDir()
+    local chats = {}
+    for name in lfs.dir(dir) do
+        if name:match("%.html$") then
+            local path = dir .. "/" .. name
+            local state = loadChat(path)
+            table.insert(chats, { path = path, title = state and state.title or (name:gsub("%.html$", "")),
+                mtime = lfs.attributes(path, "modification") or 0 })
+        end
+    end
+    table.sort(chats, function(a, b) return a.mtime > b.mtime end)
+    return chats
+end
+
+-- Taps on the plain rows of a full-screen pane: each target is a FrameContainer, placed once painted.
+local function tapTarget(targets, pos)
+    for _, target in ipairs(targets) do
+        if target.frame.dimen and pos:intersectWith(target.frame.dimen) then
+            target.action()
+            return true
+        end
+    end
+end
+
+-- The Shelf's Claude tile: New chat, then every chat newest first in serif, a page at a time.
+local ChatsWindow = InputContainer:extend{
+    on_new = nil,
+    on_open = nil, -- function(path)
+    on_settings = nil,
+    on_close = nil,
+    covers_fullscreen = true,
+}
+
+function ChatsWindow:init()
+    self.dimen = Geom:new{ x = 0, y = 0, w = Screen:getWidth(), h = Screen:getHeight() }
+    self.margin = Screen:scaleBySize(20)
+    self.inner_w = self.dimen.w - 2 * self.margin
+    self.row_h = Screen:scaleBySize(36)
+    self.title_face = Font:getFace(SERIF, 19)
+    self.date_face = Font:getFace(SERIF, 13)
+    self.page = 1
+    self.ges_events = {
+        Tap = { GestureRange:new{ ges = "tap", range = self.dimen } },
+        Swipe = { GestureRange:new{ ges = "swipe", range = self.dimen } },
+    }
+    self:reload()
+end
+
+-- Reads the chats folder again: after a reply or a new chat the list changes order.
+function ChatsWindow:reload()
+    self.chats = listChats()
+    self:rebuild()
+end
+
+function ChatsWindow:rebuild()
+    local old = self[1]
+    self[1] = self:build()
+    if old then old:free() end
+    UIManager:setDirty(self, "ui")
+end
+
+function ChatsWindow:frameRow(height, widget, action)
+    local frame = FrameContainer:new{ bordersize = 0, padding = 0,
+        LeftContainer:new{ dimen = Geom:new{ w = self.inner_w, h = height }, widget } }
+    table.insert(self.targets, { frame = frame, action = action })
+    return frame
+end
+
+function ChatsWindow:build()
+    local width, height = self.dimen.w, self.dimen.h
+    self.targets = {}
+    local title_bar = TitleBar:new{
+        width = width, title = _("Claude"), with_bottom_line = true, show_parent = self,
+        close_callback = function() self.on_close() end,
+    }
+    addGear(title_bar, function() self.on_settings() end)
+    local list = VerticalGroup:new{ align = "left" }
+    local new_h = math.floor(1.5 * self.row_h)
+    table.insert(list, self:frameRow(new_h,
+        TextWidget:new{ text = "→ " .. _("New chat"), face = Font:getFace(SERIF_BOLD, 21) },
+        function() self.on_new() end))
+    local line_h = Size.line.thin
+    local footer_h = self.row_h
+    local per_page = math.max(1, math.floor((height - title_bar:getHeight() - new_h - footer_h)
+        / (self.row_h + line_h)))
+    local pages = math.max(1, math.ceil(#self.chats / per_page))
+    self.page = math.max(1, math.min(self.page, pages))
+    for i = (self.page - 1) * per_page + 1, math.min(#self.chats, self.page * per_page) do
+        local chat = self.chats[i]
+        local date = TextWidget:new{ text = shortDate(chat.mtime), face = self.date_face,
+                                     fgcolor = Blitbuffer.COLOR_DARK_GRAY }
+        local dimen = Geom:new{ w = self.inner_w, h = self.row_h }
+        table.insert(list, LineWidget:new{ dimen = Geom:new{ w = self.inner_w, h = line_h },
+                                           background = Blitbuffer.COLOR_LIGHT_GRAY })
+        table.insert(list, self:frameRow(self.row_h, OverlapGroup:new{
+            dimen = dimen,
+            LeftContainer:new{ dimen = dimen, TextWidget:new{ text = chat.title, face = self.title_face,
+                max_width = self.inner_w - date:getSize().w - Screen:scaleBySize(12) } },
+            RightContainer:new{ dimen = dimen, date },
+        }, function() self.on_open(chat.path) end))
+    end
+    local footer = CenterContainer:new{
+        dimen = Geom:new{ w = width, h = footer_h },
+        TextWidget:new{ text = pages > 1 and (self.page .. " / " .. pages) or "", face = Font:getFace("smallffont"),
+                        fgcolor = Blitbuffer.COLOR_DARK_GRAY },
+    }
+    footer.overlap_offset = { 0, height - footer_h }
+    return FrameContainer:new{
+        background = Blitbuffer.COLOR_WHITE, bordersize = 0, padding = 0,
+        OverlapGroup:new{
+            dimen = Geom:new{ w = width, h = height },
+            VerticalGroup:new{
+                align = "left",
+                title_bar,
+                FrameContainer:new{ bordersize = 0, padding = 0, padding_left = self.margin, list },
+            },
+            footer,
+        },
+    }
+end
+
+function ChatsWindow:onTap(_, ges)
+    tapTarget(self.targets, ges.pos)
+    return true
+end
+
+function ChatsWindow:onSwipe(_, ges)
+    local step = ({ west = 1, east = -1 })[ges.direction]
+    if step then
+        self.page = self.page + step
+        self:rebuild()
+    end
+    return true
+end
+
+-- Opening prompt, reading text, footer items, default model and effort, and the Mac relay; each change is saved
+-- at once and the pane redrawn.
+local SettingsPane = InputContainer:extend{
+    on_relay = nil, -- function(on_saved)
+    on_close = nil,
+    covers_fullscreen = true,
+}
+
+local TEXT_STEPS = {
+    { key = "text_size", label = _("Size"), step = 1, min = 14, max = 40, format = "%d" },
+    { key = "line_spacing", label = _("Line spacing"), step = 0.1, min = 1.0, max = 2.2, format = "%.1f" },
+    { key = "margin", label = _("Margin"), step = 2, min = 0, max = 40, format = "%d px" },
+}
+
+local SHOW = {
+    { key = "show_pages", label = _("Page numbers") },
+    { key = "show_context", label = _("Context used") },
+    { key = "show_five_hour", label = _("5h limit") },
+}
+
+function SettingsPane:init()
+    self.dimen = Geom:new{ x = 0, y = 0, w = Screen:getWidth(), h = Screen:getHeight() }
+    self.ges_events = { Tap = { GestureRange:new{ ges = "tap", range = self.dimen } } }
+    self:rebuild()
+end
+
+function SettingsPane:rebuild()
+    local old = self[1]
+    self[1] = self:build()
+    if old then old:free() end
+    UIManager:setDirty(self, "ui")
+end
+
+function SettingsPane:close()
+    UIManager:close(self)
+    self.on_close()
+end
+
+function SettingsPane:build()
+    local cfg = config()
+    local width = self.dimen.w
+    local margin = Screen:scaleBySize(20)
+    local inner_w = width - 2 * margin
+    local control_w = math.floor(inner_w * 0.58)
+    local label_face = Font:getFace("cfont", 17)
+    local small_face = Font:getFace("smallffont")
+    local row_h = Screen:scaleBySize(40)
+    self.targets = {}
+    local group = VerticalGroup:new{ align = "left" }
+    local function change(key, value)
+        cfg[key] = value
+        saveConfig(cfg)
+        self:rebuild()
+    end
+    local function label(text)
+        return TextWidget:new{ text = text, face = label_face, bold = true }
+    end
+    local function row(text, control, action)
+        local dimen = Geom:new{ w = inner_w, h = row_h }
+        local frame = FrameContainer:new{ bordersize = 0, padding = 0, OverlapGroup:new{
+            dimen = dimen,
+            LeftContainer:new{ dimen = dimen, label(text) },
+            RightContainer:new{ dimen = dimen, control },
+        } }
+        if action then table.insert(self.targets, { frame = frame, action = action }) end
+        table.insert(group, frame)
+    end
+    local function buttons(list)
+        for _, b in ipairs(list) do
+            b.font_size, b.font_bold = 16, false
+        end
+        return FrameContainer:new{ bordersize = Size.border.thin, padding = 0,
+            ButtonTable:new{ width = control_w, buttons = { list }, show_parent = self } }
+    end
+    local function section(text)
+        table.insert(group, VerticalSpan:new{ width = Screen:scaleBySize(10) })
+        table.insert(group, TextWidget:new{ text = text, face = small_face, fgcolor = Blitbuffer.COLOR_DARK_GRAY })
+        table.insert(group, LineWidget:new{ dimen = Geom:new{ w = inner_w, h = Size.line.thin },
+                                            background = Blitbuffer.COLOR_LIGHT_GRAY })
+    end
+    local function choose(text, key, options, current)
+        local list = {}
+        for _, o in ipairs(options) do
+            table.insert(list, { text = o.text, checked_func = function() return current == o.id end,
+                                 callback = function() change(key, o.id) end })
+        end
+        row(text, buttons(list))
+    end
+
+    table.insert(group, VerticalSpan:new{ width = Screen:scaleBySize(8) })
+    table.insert(group, label(_("Opening prompt")))
+    table.insert(group, VerticalSpan:new{ width = Screen:scaleBySize(4) })
+    local pad = Screen:scaleBySize(6)
+    local opening = FrameContainer:new{
+        bordersize = Size.border.thin, padding = pad,
+        TextBoxWidget:new{
+            text = cfg.opening and shorten(cfg.opening, 240) or _("Tap to say how Claude should answer."),
+            face = small_face, width = inner_w - 2 * pad - 2 * Size.border.thin,
+            fgcolor = cfg.opening and Blitbuffer.COLOR_BLACK or Blitbuffer.COLOR_DARK_GRAY,
+        },
+    }
+    table.insert(self.targets, { frame = opening, action = function() self:editOpening(cfg, change) end })
+    table.insert(group, opening)
+
+    section(_("TEXT"))
+    for _, s in ipairs(TEXT_STEPS) do
+        local value = textSetting(cfg, s.key)
+        local function set(v)
+            change(s.key, math.max(s.min, math.min(s.max, math.floor(v / s.step + 0.5) * s.step)))
+        end
+        row(s.label, buttons{
+            { text = "−", callback = function() set(value - s.step) end },
+            { text = string.format(s.format, value), enabled = false },
+            { text = "+", callback = function() set(value + s.step) end },
+        })
+    end
+
+    section(_("SHOW"))
+    local on_off = { { id = true, text = _("On") }, { id = false, text = _("Off") } }
+    for _, s in ipairs(SHOW) do
+        choose(s.label, s.key, on_off, shown(cfg, s.key))
+    end
+
+    section(_("DEFAULTS"))
+    choose(_("Model"), "model", MODELS, cfg.model or DEFAULT_MODEL)
+    choose(_("Effort"), "effort", EFFORTS, cfg.effort or DEFAULT_EFFORT)
+    row(_("Mac relay"), TextWidget:new{ text = (cfg.host or _("not paired")) .. " ›", face = small_face },
+        function() self.on_relay(function() self:rebuild() end) end)
+
+    local title_bar = TitleBar:new{
+        width = width, title = _("Settings"), with_bottom_line = true, show_parent = self,
+        left_icon = "chevron.left", left_icon_tap_callback = function() self:close() end,
+    }
+    return FrameContainer:new{
+        background = Blitbuffer.COLOR_WHITE, bordersize = 0, padding = 0,
+        dimen = Geom:new{ w = width, h = self.dimen.h },
+        VerticalGroup:new{
+            align = "left",
+            title_bar,
+            FrameContainer:new{ bordersize = 0, padding = 0, padding_left = margin, group },
+        },
+    }
+end
+
+function SettingsPane:editOpening(cfg, change)
+    local dialog
+    dialog = InputDialog:new{
+        title = _("Opening prompt"),
+        input = cfg.opening or "",
+        input_hint = _("I read on an e-ink reader. Prefer short paragraphs."),
+        allow_newline = true,
+        buttons = {{
+            { text = _("Cancel"), id = "close", callback = function() UIManager:close(dialog) end },
+            { text = _("Save"), callback = function()
+                local text = util.trim(dialog:getInputText())
+                UIManager:close(dialog)
+                change("opening", text ~= "" and text or nil)
+            end },
+        }},
+    }
+    UIManager:show(dialog)
+    dialog:onShowKeyboard()
+end
+
+function SettingsPane:onTap(_, ges)
+    tapTarget(self.targets, ges.pos)
+    return true
 end
 
 function ClaudeChat:init()
@@ -605,35 +954,12 @@ function ClaudeChat:addToMainMenu(menu_items)
         sub_item_table = {
             { text = _("New chat…"), keep_menu_open = false, callback = function() self:askNewChat() end },
             { text = _("Chats"), callback = function() self:showChats() end },
-            {
-                text_func = function() return T(_("Model: %1"), config().model or DEFAULT_MODEL) end,
-                sub_item_table_func = function()
-                    local items = {}
-                    for _, m in ipairs(MODELS) do
-                        table.insert(items, {
-                            text = m.text,
-                            radio = true,
-                            checked_func = function() return (config().model or DEFAULT_MODEL) == m.id end,
-                            callback = function()
-                                local cfg = config()
-                                cfg.model = m.id
-                                saveConfig(cfg)
-                            end,
-                        })
-                    end
-                    return items
-                end,
-            },
-            {
-                text_func = function() return T(_("Mac relay: %1"), config().host or _("not paired")) end,
-                keep_menu_open = true,
-                callback = function(touchmenu) self:editRelay(touchmenu) end,
-            },
+            { text = _("Settings"), callback = function() self:showSettings() end },
         },
     }
 end
 
-function ClaudeChat:editRelay(touchmenu)
+function ClaudeChat:editRelay(on_saved)
     local dialog
     dialog = InputDialog:new{
         title = _("Mac relay address"),
@@ -646,7 +972,7 @@ function ClaudeChat:editRelay(touchmenu)
                 cfg.host = dialog:getInputText()
                 saveConfig(cfg)
                 UIManager:close(dialog)
-                if touchmenu then touchmenu:updateItems() end
+                on_saved()
             end },
         }},
     }
@@ -664,41 +990,34 @@ function ClaudeChat:showChats()
     self.ui.file_chooser:changeToPath(dir)
 end
 
-local RECENT_CHATS = 5
-
--- The Shelf's Claude tile: New chat, the newest chats, and the folder.
+-- The Shelf's Claude tile. It stays under an open chat, so closing the chat comes back to the list.
 function ClaudeChat:open()
-    local dir = chatsDir()
-    local chats = {}
-    for name in lfs.dir(dir) do
-        if name:match("%.html$") then
-            local path = dir .. "/" .. name
-            table.insert(chats, { path = path, name = name:gsub("%.html$", ""),
-                mtime = lfs.attributes(path, "modification") or 0 })
-        end
-    end
-    table.sort(chats, function(a, b) return a.mtime > b.mtime end)
-    local dialog
-    local buttons = {{ { text = _("New chat…"), callback = function()
-        UIManager:close(dialog)
-        self:askNewChat()
-    end } }}
-    for i = 1, math.min(RECENT_CHATS, #chats) do
-        local chat = chats[i]
-        local state = loadChat(chat.path)
-        table.insert(buttons, {{ text = state and state.title or chat.name, align = "left", callback = function()
-            UIManager:close(dialog)
-            self:openChatView(chat.path)
-        end }})
-    end
-    if #chats > RECENT_CHATS then
-        table.insert(buttons, {{ text = _("All chats"), callback = function()
-            UIManager:close(dialog)
-            self:showChats()
-        end }})
-    end
-    dialog = ButtonDialog:new{ title = _("Claude"), buttons = buttons }
-    UIManager:show(dialog)
+    if self.chats_window then return end
+    local window
+    window = ChatsWindow:new{
+        on_new = function() self:askNewChat() end,
+        on_open = function(path) self:openChatView(path) end,
+        on_settings = function() self:showSettings() end,
+        on_close = function() self:closeChats() end,
+    }
+    self.chats_window = window
+    UIManager:show(window, "full")
+end
+
+function ClaudeChat:closeChats()
+    if not self.chats_window then return end
+    UIManager:close(self.chats_window)
+    self.chats_window = nil
+end
+
+-- An open chat view takes the new text settings when the pane closes.
+function ClaudeChat:showSettings()
+    UIManager:show(SettingsPane:new{
+        on_relay = function(on_saved) self:editRelay(on_saved) end,
+        on_close = function()
+            if self.view then self.view:applySettings() end
+        end,
+    }, "full")
 end
 
 -- A row of toggles: a grey label, then one button per option; tapping one ticks it and unticks the rest.
@@ -795,9 +1114,11 @@ function ClaudeChat:showChatView(file, chat)
         on_steer = function(id) self:onSteer(id, view) end,
         on_book = function(exchange)
             self:closeChatView()
+            self:closeChats()
             self:openChat(file, "t" .. (2 * exchange - 1))
         end,
         on_close = function() self:closeChatView() end,
+        on_settings = function() self:showSettings() end,
     }
     view.file = file
     self.view = view
@@ -811,6 +1132,7 @@ function ClaudeChat:closeChatView()
     if self.cancel then self.cancel() end
     UIManager:close(self.view)
     self.view = nil
+    if self.chats_window then self.chats_window:reload() end
 end
 
 function ClaudeChat:openChatView(file)
