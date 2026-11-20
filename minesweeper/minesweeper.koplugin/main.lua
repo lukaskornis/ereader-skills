@@ -444,7 +444,7 @@ function MinesWidget:hatchTile(side)
     local tile = Blitbuffer.new(side, side, Blitbuffer.TYPE_BB8)
     tile:fill(WHITE)
     local step = math.max(6, math.floor(side * 0.32 + 0.5))
-    local w = math.max(2, math.floor(side * 0.07 + 0.5))
+    local w = math.max(1, math.floor(side * 0.035 + 0.5))
     for y = 0, side - 1 do
         for x = (step - y % step) % step, side - 1, step do
             tile:paintRect(x, y, math.min(w, side - x), 1, BLACK)
