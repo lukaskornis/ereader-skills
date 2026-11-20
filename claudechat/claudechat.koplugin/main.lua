@@ -2,27 +2,43 @@
 Claude chat: each conversation is one HTML file in <home>/Claude, opened in the normal reader so it reads like
 a book (fonts, margins, page turns, TOC of questions). The file carries its own state (session id, turns) in a
 leading comment, so it survives moves and renames.
-Replies come from the Mac relay (claudechat/relay.py), which runs `claude -p` on the subscription.
+Replies come from the Mac relay (claudechat/relay.py), which runs `claude -p` on the subscription, and are shown
+live as Claude writes them.
 Steering links at the end of the file use the claude: scheme and are caught before ReaderLink treats them as
 external. Selecting text adds Claude buttons to the highlight dialog: in a chat they continue it, in any other
 book they start a new chat about the passage.
 ]]
+local Blitbuffer = require("ffi/blitbuffer")
 local ButtonDialog = require("ui/widget/buttondialog")
 local DataStorage = require("datastorage")
+local Device = require("device")
+local FrameContainer = require("ui/widget/container/framecontainer")
+local Geom = require("ui/geometry")
 local InfoMessage = require("ui/widget/infomessage")
+local InputContainer = require("ui/widget/container/inputcontainer")
 local InputDialog = require("ui/widget/inputdialog")
 local JSON = require("json")
 local NetworkMgr = require("ui/network/manager")
-local Trapper = require("ui/trapper")
+local ScrollHtmlWidget = require("ui/widget/scrollhtmlwidget")
+local Size = require("ui/size")
+local TitleBar = require("ui/widget/titlebar")
 local UIManager = require("ui/uimanager")
+local VerticalGroup = require("ui/widget/verticalgroup")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
+local ffi = require("ffi")
+local ffiutil = require("ffi/util")
 local lfs = require("libs/libkoreader-lfs")
 local util = require("util")
 local _ = require("gettext")
-local T = require("ffi/util").template
+local T = ffiutil.template
+local Screen = Device.screen
 
 local HEADER = "<!--claudechat "
 local REQUEST_TIMEOUT_S = 600
+-- Claude Code takes ~15 s to start before the first byte, so the per-read timeout must outlast that.
+local READ_TIMEOUT_S = 60
+-- Each repaint flashes a little on e-ink; once a second and a half reads as steady writing.
+local LIVE_REFRESH_S = 1.5
 -- Wait after each failed attempt; the last entry is just the pause before giving up.
 local RETRY_DELAYS_S = { 2, 4, 8, 16, 0 }
 local MODELS = { { id = "sonnet", text = "Sonnet" }, { id = "opus", text = "Opus" }, { id = "haiku", text = "Haiku" } }
@@ -138,10 +154,10 @@ local function saveChat(file, chat)
     return os.rename(file .. ".part", file)
 end
 
--- Runs in a forked subprocess (Trapper), so it may block; returns the relay's JSON body as a string.
+-- Runs in a forked subprocess: streams the relay's reply (one JSON object per line) into fd as it arrives.
 -- Only "no answer at all" is retried: Wi-Fi waking up or the relay restarting clear within seconds, while a
 -- relay error reply means Claude itself failed and gets the Retry button instead.
-local function postToRelay(cfg, payload)
+local function streamFromRelay(cfg, payload, fd)
     local http = require("socket.http")
     local ltn12 = require("ltn12")
     local socket = require("socket")
@@ -149,21 +165,99 @@ local function postToRelay(cfg, payload)
     local body = JSON.encode(payload)
     local code
     for _, delay in ipairs(RETRY_DELAYS_S) do
-        local sink = {}
-        socketutil:set_timeout(15, REQUEST_TIMEOUT_S)
+        local received = false
+        socketutil:set_timeout(READ_TIMEOUT_S, REQUEST_TIMEOUT_S)
         code = socket.skip(1, http.request{
-            url = "http://" .. cfg.host .. "/chat",
+            url = "http://" .. cfg.host .. "/chat/stream",
             method = "POST",
             headers = { ["Content-Type"] = "application/json", ["Content-Length"] = #body, ["X-Key"] = cfg.key },
             source = ltn12.source.string(body),
-            sink = socketutil.table_sink(sink),
+            sink = function(chunk)
+                if chunk and chunk ~= "" then
+                    received = true
+                    ffiutil.writeToFD(fd, chunk)
+                end
+                return 1
+            end,
         })
         socketutil:reset_timeout()
-        local text = table.concat(sink)
-        if text ~= "" then return text end
+        if received then return end
         socket.sleep(delay)
     end
-    return JSON.encode({ error = T("The Mac relay at %1 did not answer (%2). Is the Mac awake?", cfg.host, tostring(code)) })
+    ffiutil.writeToFD(fd, JSON.encode({
+        error = T("The Mac relay at %1 did not answer (%2). Is the Mac awake?", cfg.host, tostring(code)) }))
+end
+
+local function readAvailable(fd)
+    local size = ffiutil.getNonBlockingReadSize(fd) or 0
+    if size <= 0 then return "" end
+    local buffer = ffi.new("char[?]", size)
+    local got = tonumber(ffi.C.read(fd, buffer, size))
+    return got > 0 and ffi.string(buffer, got) or ""
+end
+
+-- A half-written reply: drop a code fence Claude may open with and a tag cut off mid-name.
+local function partialHtml(html)
+    return (html:gsub("^%s*```%w*%s*", ""):gsub("<[^>]*$", ""))
+end
+
+local LIVE_CSS = "p { margin: 0 0 0.7em; text-align: justify; } h3 { font-variant: small-caps; }"
+    .. " blockquote { margin: 0.6em 1.5em; font-style: italic; }"
+
+-- Full-screen page that shows the reply while Claude writes it. Closing it cancels.
+local LiveReply = InputContainer:extend{
+    title = nil,
+    on_cancel = nil,
+}
+
+function LiveReply:init()
+    local width, height = Screen:getWidth(), Screen:getHeight()
+    self.dimen = Geom:new{ x = 0, y = 0, w = width, h = height }
+    local title_bar = TitleBar:new{
+        width = width,
+        title = self.title,
+        subtitle = _("Claude is writing…"),
+        with_bottom_line = true,
+        close_callback = function() self.on_cancel() end,
+    }
+    self.padding = Size.padding.large
+    self.body_width = width - 2 * self.padding
+    self.body_height = height - title_bar:getHeight() - 2 * self.padding
+    self.body = FrameContainer:new{ bordersize = 0, padding = self.padding, self:newScroll("") }
+    self[1] = FrameContainer:new{
+        background = Blitbuffer.COLOR_WHITE,
+        bordersize = 0,
+        padding = 0,
+        VerticalGroup:new{ align = "left", title_bar, self.body },
+    }
+end
+
+function LiveReply:newScroll(html)
+    return ScrollHtmlWidget:new{
+        html_body = html,
+        css = LIVE_CSS,
+        width = self.body_width,
+        height = self.body_height,
+        dialog = self,
+    }
+end
+
+-- Shows the reply so far; follows the newest text unless the reader paged back.
+function LiveReply:setHtml(html)
+    local old = self.body[1]
+    local box = old.htmlbox_widget
+    local follow = box.page_number >= box.page_count
+    local scroll = self:newScroll(html)
+    local page = follow and scroll.htmlbox_widget.page_count or math.min(box.page_number, scroll.htmlbox_widget.page_count)
+    scroll.htmlbox_widget:setPageNumber(page)
+    scroll:_updateScrollBar()
+    self.body[1] = scroll
+    old:free()
+    UIManager:setDirty(self, function() return "ui", self.body.dimen end)
+end
+
+function LiveReply:onCloseWidget()
+    self.body[1]:free()
 end
 
 function ClaudeChat:init()
@@ -324,34 +418,83 @@ function ClaudeChat:send(file, chat, prompt, label)
         G_reader_settings:flush()
     end
     NetworkMgr:runWhenOnline(function()
-        Trapper:wrap(function()
-            local payload = { prompt = prompt, session_id = chat.session_id, model = cfg.model or "sonnet" }
-            local completed, body = Trapper:dismissableRunInSubprocess(function()
-                return postToRelay(cfg, payload)
-            end, _("Claude is writing…"), true)
-            if not completed then return end
-            local ok, res = pcall(JSON.decode, body or "")
-            if not ok or type(res) ~= "table" then
-                res = { error = T(_("Unreadable answer from the relay:\n%1"), shorten(tostring(body), 200)) }
-            end
-            if res.error or not res.html then
-                self:showSendFailed(tostring(res.error or _("Empty answer.")), file, chat, prompt, label)
-                return
-            end
-            local done = config()
-            done.unsent = nil
-            saveConfig(done)
-            chat.session_id = res.session_id
-            table.insert(chat.turns, { role = "user", text = prompt, label = label })
-            table.insert(chat.turns, { role = "assistant", html = res.html })
-            local saved, err = saveChat(file, chat)
-            if not saved then
-                UIManager:show(InfoMessage:new{ text = T(_("Could not save the chat:\n%1"), tostring(err)) })
-                return
-            end
-            self:openChat(file, "t" .. (#chat.turns - 1))
-        end)
+        self:streamReply(file, chat, prompt, label, cfg)
     end)
+end
+
+-- Fetches the reply in a forked subprocess (the UI never blocks) and shows it live; on the last line saves it.
+function ClaudeChat:streamReply(file, chat, prompt, label, cfg)
+    local payload = { prompt = prompt, session_id = chat.session_id, model = cfg.model or "sonnet" }
+    local pid, fd = ffiutil.runInSubProcess(function(_, write_fd)
+        streamFromRelay(cfg, payload, write_fd)
+    end, true)
+    if not pid then
+        self:showSendFailed(_("Could not start the request."), file, chat, prompt, label)
+        return
+    end
+    local live, tick
+    local pending, html, result = "", "", nil
+    local function reap()
+        if not ffiutil.isSubProcessDone(pid) then UIManager:scheduleIn(1, reap) end
+    end
+    local function take(line)
+        local ok, obj = pcall(JSON.decode, line)
+        if not ok or type(obj) ~= "table" then
+            result = { error = T(_("Unreadable answer from the relay:\n%1"), shorten(line, 200)) }
+        elseif obj.delta then
+            html = html .. obj.delta
+        else
+            result = obj
+        end
+    end
+    live = LiveReply:new{
+        title = label or shorten(prompt, 70),
+        on_cancel = function()
+            UIManager:unschedule(tick)
+            ffiutil.terminateSubProcess(pid)
+            ffi.C.close(fd)
+            UIManager:close(live)
+            reap()
+        end,
+    }
+    tick = function()
+        local done = ffiutil.isSubProcessDone(pid)
+        local before = #html
+        pending = pending .. (done and ffiutil.readAllFromFD(fd) or readAvailable(fd))
+        for line in pending:gmatch("([^\n]*)\n") do
+            take(line)
+        end
+        pending = pending:match("[^\n]*$")
+        if done and pending ~= "" then take(pending) end
+        if #html > before then live:setHtml(partialHtml(html)) end
+        if not done then
+            UIManager:scheduleIn(LIVE_REFRESH_S, tick)
+            return
+        end
+        UIManager:close(live)
+        self:onReply(result or { error = _("The connection dropped before Claude finished.") }, file, chat, prompt, label)
+    end
+    UIManager:show(live, "ui")
+    UIManager:scheduleIn(LIVE_REFRESH_S, tick)
+end
+
+function ClaudeChat:onReply(res, file, chat, prompt, label)
+    if res.error or not res.html then
+        self:showSendFailed(tostring(res.error or _("Empty answer.")), file, chat, prompt, label)
+        return
+    end
+    local done = config()
+    done.unsent = nil
+    saveConfig(done)
+    chat.session_id = res.session_id
+    table.insert(chat.turns, { role = "user", text = prompt, label = label })
+    table.insert(chat.turns, { role = "assistant", html = res.html })
+    local saved, err = saveChat(file, chat)
+    if not saved then
+        UIManager:show(InfoMessage:new{ text = T(_("Could not save the chat:\n%1"), tostring(err)) })
+        return
+    end
+    self:openChat(file, "t" .. (#chat.turns - 1))
 end
 
 function ClaudeChat:showSendFailed(err, file, chat, prompt, label)

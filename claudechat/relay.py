@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Claude chat relay: the e-reader posts a prompt, this runs `claude -p` on the Mac with the
-subscription token and returns the reply as an HTML fragment.
+subscription token and returns the reply as an HTML fragment, whole (POST /chat) or as it is written
+(POST /chat/stream).
 
   relay.py serve            run the relay (the LaunchAgent does this)
   relay.py login            one-time: `claude setup-token`, token saved to the login keychain
@@ -17,6 +18,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -83,32 +85,80 @@ def lan_ip():
 
 
 FENCE = re.compile(r"^\s*```(?:html)?\s*|\s*```\s*$")
+NO_TOKEN = "No subscription token on the Mac. Run: relay.py login"
+TOO_SLOW = "Claude took longer than 10 minutes."
+
+
+def claude_cmd(prompt, session_id, model, output_format):
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE", "ANTHROPIC"))}
+    # A separate config dir alone still loads ~/.claude/CLAUDE.md and rules; these switch that off.
+    env.update(CLAUDE_CONFIG_DIR=CLAUDE_HOME, CLAUDE_CODE_OAUTH_TOKEN=read_token(),
+               CLAUDE_CODE_DISABLE_CLAUDE_MDS="1", CLAUDE_CODE_DISABLE_AUTO_MEMORY="1")
+    cmd = [claude_bin(), "-p", prompt, "--model", model, "--output-format", output_format,
+           "--tools", "", "--system-prompt", SYSTEM_PROMPT]
+    if output_format == "stream-json":
+        cmd += ["--verbose", "--include-partial-messages"]
+    if session_id:
+        cmd += ["--resume", session_id]
+    return cmd, env
+
+
+def finish(data):
+    if data.get("is_error"):
+        return {"error": str(data.get("result") or data.get("terminal_reason"))[:400]}
+    return {"session_id": data.get("session_id"), "html": FENCE.sub("", data.get("result") or "")}
 
 
 def ask_claude(prompt, session_id, model):
-    token = read_token()
-    if not token:
-        return {"error": "No subscription token on the Mac. Run: relay.py login"}
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE", "ANTHROPIC"))}
-    # A separate config dir alone still loads ~/.claude/CLAUDE.md and rules; these switch that off.
-    env.update(CLAUDE_CONFIG_DIR=CLAUDE_HOME, CLAUDE_CODE_OAUTH_TOKEN=token,
-               CLAUDE_CODE_DISABLE_CLAUDE_MDS="1", CLAUDE_CODE_DISABLE_AUTO_MEMORY="1")
-    cmd = [claude_bin(), "-p", prompt, "--model", model, "--output-format", "json",
-           "--tools", "", "--system-prompt", SYSTEM_PROMPT]
-    if session_id:
-        cmd += ["--resume", session_id]
+    if not read_token():
+        return {"error": NO_TOKEN}
+    cmd, env = claude_cmd(prompt, session_id, model, "json")
     try:
         out = subprocess.run(cmd, cwd=WORK_DIR, env=env, capture_output=True, text=True,
                              timeout=TIMEOUT_S, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
-        return {"error": "Claude took longer than 10 minutes."}
+        return {"error": TOO_SLOW}
     try:
         data = json.loads(out.stdout)
     except json.JSONDecodeError:
         return {"error": (out.stderr or out.stdout or "claude failed").strip()[-400:]}
-    if data.get("is_error"):
-        return {"error": str(data.get("result") or data.get("terminal_reason"))[:400]}
-    return {"session_id": data.get("session_id"), "html": FENCE.sub("", data.get("result") or "")}
+    return finish(data)
+
+
+def stream_claude(prompt, session_id, model, emit):
+    """Calls emit({"delta": text}) as Claude writes, then emit() once more with the reply or an error.
+    emit raising (the reader hung up) stops Claude."""
+    if not read_token():
+        return emit({"error": NO_TOKEN})
+    cmd, env = claude_cmd(prompt, session_id, model, "stream-json")
+    proc = subprocess.Popen(cmd, cwd=WORK_DIR, env=env, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    timer = threading.Timer(TIMEOUT_S, proc.kill)
+    timer.start()
+    result = None
+    try:
+        for line in proc.stdout:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") == "result":
+                result = event
+                continue
+            delta = (event.get("event") or {}).get("delta") or {}
+            if event.get("type") == "stream_event" and delta.get("type") == "text_delta":
+                emit({"delta": delta["text"]})
+        proc.wait()
+        if result:
+            return emit(finish(result))
+        if not timer.is_alive():
+            return emit({"error": TOO_SLOW})
+        emit({"error": (proc.stderr.read() or "claude failed").strip()[-400:]})
+    finally:
+        timer.cancel()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -131,7 +181,7 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(200, {"ok": True, "token": bool(read_token())})
 
     def do_POST(self):
-        if self.path != "/chat":
+        if self.path not in ("/chat", "/chat/stream"):
             return self.reply(404, {"error": "not found"})
         if not self.authorized():
             return self.reply(403, {"error": "Wrong relay key. Run: relay.py pair"})
@@ -143,8 +193,22 @@ class Handler(BaseHTTPRequestHandler):
         model = req.get("model") if req.get("model") in MODELS else "sonnet"
         if not prompt:
             return self.reply(400, {"error": "empty prompt"})
-        result = ask_claude(prompt, req.get("session_id"), model)
-        self.reply(502 if "error" in result else 200, result)
+        if self.path == "/chat":
+            result = ask_claude(prompt, req.get("session_id"), model)
+            return self.reply(502 if "error" in result else 200, result)
+        # One JSON object per line, flushed as Claude writes; the connection closes after the last one.
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        def emit(obj):
+            self.wfile.write(json.dumps(obj).encode() + b"\n")
+            self.wfile.flush()
+        try:
+            stream_claude(prompt, req.get("session_id"), model, emit)
+        except (BrokenPipeError, ConnectionResetError):
+            self.log_message("reader hung up, Claude stopped")
 
     def log_message(self, fmt, *args):
         sys.stderr.write("%s %s\n" % (self.address_string(), fmt % args))
