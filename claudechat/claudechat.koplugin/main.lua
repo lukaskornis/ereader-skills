@@ -677,7 +677,8 @@ end
 
 -- Fetches the reply in a forked subprocess (the UI never blocks) and shows it live; on the last line saves it.
 function ClaudeChat:streamReply(file, chat, prompt, label, cfg)
-    local payload = { prompt = prompt, session_id = chat.session_id, model = cfg.model or "sonnet" }
+    local payload = { prompt = prompt, session_id = chat.session_id, model = cfg.model or "sonnet",
+                      effort = cfg.effort, opening = cfg.opening }
     local pid, fd = ffiutil.runInSubProcess(function(_, write_fd)
         streamFromRelay(cfg, payload, write_fd)
     end, true)
@@ -749,6 +750,8 @@ function ClaudeChat:saveReply(res, file, chat, prompt, label)
     done.unsent = nil
     saveConfig(done)
     chat.session_id = res.session_id
+    -- Context tokens and window, 5-hour limit used: shown in the chat view's footer.
+    chat.usage = res.usage
     table.insert(chat.turns, { role = "user", text = prompt, label = label })
     table.insert(chat.turns, { role = "assistant", html = res.html })
     local saved, err = saveChat(file, chat)

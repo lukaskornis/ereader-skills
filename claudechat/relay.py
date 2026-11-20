@@ -40,6 +40,10 @@ WATCHDOG_PLIST = os.path.expanduser(f"~/Library/LaunchAgents/{WATCHDOG_LABEL}.pl
 INSTALLED = os.path.expanduser("~/.local/bin/claudechat-relay")
 LOG = os.path.expanduser("~/Library/Logs/claudechat-relay.log")
 MODELS = {"sonnet", "opus", "haiku"}
+EFFORTS = {"low", "medium", "high", "max"}
+# Context window per model, learned from each result line; every current model has 1M.
+CONTEXT_WINDOW = {}
+DEFAULT_WINDOW = 1_000_000
 TIMEOUT_S = 600
 
 SYSTEM_PROMPT = """You are a thoughtful companion whose replies are read on a black-and-white e-ink reader, like pages of a well-edited book.
@@ -94,13 +98,15 @@ NO_TOKEN = "No subscription token on the Mac. Run: relay.py login"
 TOO_SLOW = "Claude took longer than 10 minutes."
 
 
-def claude_cmd(prompt, session_id, model, output_format):
+def claude_cmd(prompt, session_id, model, effort, output_format):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE", "ANTHROPIC"))}
     # A separate config dir alone still loads ~/.claude/CLAUDE.md and rules; these switch that off.
     env.update(CLAUDE_CONFIG_DIR=CLAUDE_HOME, CLAUDE_CODE_OAUTH_TOKEN=read_token(),
                CLAUDE_CODE_DISABLE_CLAUDE_MDS="1", CLAUDE_CODE_DISABLE_AUTO_MEMORY="1")
     cmd = [claude_bin(), "-p", prompt, "--model", model, "--output-format", output_format,
            "--tools", "", "--system-prompt", SYSTEM_PROMPT]
+    if effort:
+        cmd += ["--effort", effort]
     if output_format == "stream-json":
         cmd += ["--verbose", "--include-partial-messages"]
     if session_id:
@@ -111,8 +117,8 @@ def claude_cmd(prompt, session_id, model, output_format):
 IMG = re.compile(r"""<img\b[^>]*?\bsrc=["'](https?://[^"']+)["'][^>]*>""", re.I)
 IMG_MAX_BYTES = 8 * 1024 * 1024
 IMG_TIMEOUT_S = 8
-# Wider than any reader screen; JPEG keeps the chat file small.
-IMG_MAX_PX = 1200
+# The Kobo screen width; JPEG keeps the chat file small.
+IMG_MAX_PX = 1404
 
 
 # Wikimedia only serves a few thumbnail widths; the original behind a thumb URL always exists.
@@ -162,16 +168,30 @@ def inline_images(html):
     return IMG.sub(lambda m: m.group(0).replace(m.group(1), found[m.group(1)]) if found[m.group(1)] else "", html)
 
 
-def finish(data):
+def finish(data, usage=None):
     if data.get("is_error"):
         return {"error": str(data.get("result") or data.get("terminal_reason"))[:400]}
-    return {"session_id": data.get("session_id"), "html": inline_images(FENCE.sub("", data.get("result") or ""))}
+    reply = {"session_id": data.get("session_id"), "html": inline_images(FENCE.sub("", data.get("result") or ""))}
+    if usage:
+        reply["usage"] = usage
+    return reply
 
 
-def ask_claude(prompt, session_id, model):
+def context_tokens(usage):
+    return sum(usage.get(k) or 0 for k in
+               ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"))
+
+
+def learn_windows(result):
+    for name, info in (result.get("modelUsage") or {}).items():
+        if info.get("contextWindow"):
+            CONTEXT_WINDOW[name] = info["contextWindow"]
+
+
+def ask_claude(prompt, session_id, model, effort):
     if not read_token():
         return {"error": NO_TOKEN}
-    cmd, env = claude_cmd(prompt, session_id, model, "json")
+    cmd, env = claude_cmd(prompt, session_id, model, effort, "json")
     try:
         out = subprocess.run(cmd, cwd=WORK_DIR, env=env, capture_output=True, text=True,
                              timeout=TIMEOUT_S, stdin=subprocess.DEVNULL)
@@ -181,43 +201,66 @@ def ask_claude(prompt, session_id, model):
         data = json.loads(out.stdout)
     except json.JSONDecodeError:
         return {"error": (out.stderr or out.stdout or "claude failed").strip()[-400:]}
+    learn_windows(data)
     return finish(data)
 
 
-def stream_claude(prompt, session_id, model, emit):
+def stream_claude(prompt, session_id, model, effort, emit):
     """Calls emit({"delta": text}) as Claude writes, then emit() once more with the reply or an error.
+    The reply carries usage: context tokens and window, and the 5-hour limit used (0 to 1) when known.
     emit raising (the reader hung up) stops Claude."""
     if not read_token():
         return emit({"error": NO_TOKEN})
-    cmd, env = claude_cmd(prompt, session_id, model, "stream-json")
+    cmd, env = claude_cmd(prompt, session_id, model, effort, "stream-json")
     proc = subprocess.Popen(cmd, cwd=WORK_DIR, env=env, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     timer = threading.Timer(TIMEOUT_S, proc.kill)
     timer.start()
     result = None
+    stopped = None
+    model_name = None
     text = []
+    usage = {}
     try:
         for line in proc.stdout:
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if event.get("type") == "result":
+            kind = event.get("type")
+            if kind == "rate_limit_event" and not result:
+                window = ((event.get("rate_limit_info") or {}).get("unifiedWindows") or {}).get("five_hour") or {}
+                if window.get("utilization") is not None:
+                    usage["five_hour"] = window["utilization"]
+            if kind == "result":
+                learn_windows(event)
+            # The 5-hour figure arrives just after the text ends and the result line can lag; the reader
+            # gets the reply at whichever comes first. Claude keeps running until it has saved the session,
+            # so the next --resume finds it.
+            if stopped and not result and kind in ("rate_limit_event", "result"):
+                result = stopped
+                emit(finish(result, usage))
+                continue
+            if kind == "result":
                 result = result or event
                 continue
-            if event.get("type") != "stream_event" or result:
+            if kind != "stream_event" or stopped:
                 continue
             inner = event.get("event") or {}
             delta = inner.get("delta") or {}
             if delta.get("type") == "text_delta":
                 text.append(delta["text"])
                 emit({"delta": delta["text"]})
+            elif inner.get("type") == "message_start":
+                model_name = (inner.get("message") or {}).get("model")
+            elif inner.get("type") == "message_delta" and inner.get("usage"):
+                usage["context"] = context_tokens(inner["usage"])
+                usage["window"] = CONTEXT_WINDOW.get(model_name, DEFAULT_WINDOW)
             elif inner.get("type") == "message_stop":
-                # The result line comes ~1.5 s later; the reader needn't wait. Claude keeps running
-                # until it has saved the session, so the next --resume finds it.
-                result = {"session_id": event.get("session_id"), "result": "".join(text)}
-                emit(finish(result))
+                stopped = {"session_id": event.get("session_id"), "result": "".join(text)}
         proc.wait()
+        if stopped and not result:
+            return emit(finish(stopped, usage))
         if result and "is_error" not in result:
             return
         if result:
@@ -262,10 +305,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(400, {"error": "bad request"})
         prompt = (req.get("prompt") or "").strip()
         model = req.get("model") if req.get("model") in MODELS else "sonnet"
+        effort = req.get("effort") if req.get("effort") in EFFORTS else None
         if not prompt:
             return self.reply(400, {"error": "empty prompt"})
+        opening = (req.get("opening") or "").strip()
+        # The opening prompt leads the first question of a new chat; resumed chats already hold it.
+        if opening and not req.get("session_id"):
+            prompt = f"{opening}\n\n{prompt}"
         if self.path == "/chat":
-            result = ask_claude(prompt, req.get("session_id"), model)
+            result = ask_claude(prompt, req.get("session_id"), model, effort)
             return self.reply(502 if "error" in result else 200, result)
         # One JSON object per line, flushed as Claude writes; the connection closes after the last one.
         self.send_response(200)
@@ -277,7 +325,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(obj).encode() + b"\n")
             self.wfile.flush()
         try:
-            stream_claude(prompt, req.get("session_id"), model, emit)
+            stream_claude(prompt, req.get("session_id"), model, effort, emit)
         except (BrokenPipeError, ConnectionResetError):
             self.log_message("reader hung up, Claude stopped")
 
