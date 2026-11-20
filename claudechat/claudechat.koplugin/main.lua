@@ -11,19 +11,23 @@ book they start a new chat about the passage.
 local Blitbuffer = require("ffi/blitbuffer")
 local ButtonDialog = require("ui/widget/buttondialog")
 local ButtonTable = require("ui/widget/buttontable")
+local CenterContainer = require("ui/widget/container/centercontainer")
 local DataStorage = require("datastorage")
 local Device = require("device")
 local Font = require("ui/font")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
+local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
 local InfoMessage = require("ui/widget/infomessage")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local InputDialog = require("ui/widget/inputdialog")
 local JSON = require("json")
+local LeftContainer = require("ui/widget/container/leftcontainer")
 local NetworkMgr = require("ui/network/manager")
-local ScrollHtmlWidget = require("ui/widget/scrollhtmlwidget")
-local Size = require("ui/size")
+local OverlapGroup = require("ui/widget/overlapgroup")
+local RightContainer = require("ui/widget/container/rightcontainer")
+local TextWidget = require("ui/widget/textwidget")
 local TitleBar = require("ui/widget/titlebar")
 local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
@@ -267,9 +271,21 @@ p.thinking { font-style: italic; }
 blockquote { margin: 0.6em 1.5em; font-style: italic; }
 ]] .. CONTENT_CSS
 
--- Full-screen chat: one question and its reply at a time, steering buttons below. Page turns run through a reply
--- and on into the next or previous one. While Claude writes, the new reply grows in place without ever moving the
--- page being read.
+-- Reading settings, all changed in the settings pane; size and margin are in unscaled pixels.
+local TEXT_DEFAULTS = { text_size = 24, line_spacing = 1.4, margin = 14 }
+
+local function textSetting(cfg, key)
+    return cfg[key] or TEXT_DEFAULTS[key]
+end
+
+-- Footer items default to shown.
+local function shown(cfg, key)
+    return cfg[key] ~= false
+end
+
+-- Full-screen chat: one question and its reply at a time, text only. Page turns run through a reply and on into
+-- the next or previous one. A tap on the top edge brings up the header; the footer shows the page and usage.
+-- While Claude writes, the new reply grows in place without ever moving the page being read.
 local ChatView = InputContainer:extend{
     chat = nil,
     on_steer = nil, -- function(id)
@@ -279,6 +295,7 @@ local ChatView = InputContainer:extend{
 }
 
 function ChatView:init()
+    local cfg = config()
     local width, height = Screen:getWidth(), Screen:getHeight()
     self.dimen = Geom:new{ x = 0, y = 0, w = width, h = height }
     self.title_bar = TitleBar:new{
@@ -293,17 +310,28 @@ function ChatView:init()
         show_parent = self,
         close_callback = function() self.on_close() end,
     }
+    self.header = FrameContainer:new{
+        background = Blitbuffer.COLOR_WHITE, bordersize = 0, padding = 0, self.title_bar,
+    }
+    self.margin = Screen:scaleBySize(textSetting(cfg, "margin"))
+    self.font_size = Screen:scaleBySize(textSetting(cfg, "text_size"))
+    self.css = VIEW_CSS .. string.format("body { line-height: %.2f; }", textSetting(cfg, "line_spacing"))
+    self.footer_face = Font:getFace("smallffont")
+    self.footer_height = 2 * self.footer_face.size
     self.buttons = self:newButtons(width)
-    self.padding = Size.padding.large
-    self.body_width = width - 2 * self.padding
-    self.body_height = height - self.title_bar:getHeight() - self.buttons:getSize().h - 2 * self.padding
-    self.body = FrameContainer:new{ bordersize = 0, padding = self.padding, self:newScroll("") }
+    self.body_width = width - 2 * self.margin
+    self.body_height = height - self.margin - self.footer_height - self.buttons:getSize().h
+    self.body = FrameContainer:new{
+        bordersize = 0, padding = self.margin, padding_bottom = 0, self:newBox(""),
+    }
+    self.footer = FrameContainer:new{ bordersize = 0, padding = 0, self:newFooter() }
     self[1] = FrameContainer:new{
         background = Blitbuffer.COLOR_WHITE,
         bordersize = 0,
         padding = 0,
-        VerticalGroup:new{ align = "left", self.title_bar, self.body, self.buttons },
+        VerticalGroup:new{ align = "left", self.body, self.buttons, self.footer },
     }
+    self.top_edge = math.floor(height / 12)
     -- Reached only when the reply itself cannot turn further, or for sideways swipes it ignores.
     self.ges_events = {
         TurnSwipe = { GestureRange:new{ ges = "swipe", range = function() return self.body.dimen end } },
@@ -314,6 +342,22 @@ function ChatView:init()
         TurnBack = { { Device.input.group.PgBack } },
     }
     self.index = self:exchangeCount()
+end
+
+-- The header sits over the text; while it is up it gets the first look at every gesture.
+function ChatView:paintTo(bb, x, y)
+    InputContainer.paintTo(self, bb, x, y)
+    if self.header_shown then self.header:paintTo(bb, x, y) end
+end
+
+function ChatView:handleEvent(event)
+    if self.header_shown and event.handler == "onGesture" and self.header:handleEvent(event) then return true end
+    return InputContainer.handleEvent(self, event)
+end
+
+function ChatView:setHeaderShown(show)
+    self.header_shown = show
+    UIManager:setDirty(self, function() return "ui", self.title_bar.dimen end)
 end
 
 function ChatView:newButtons(width)
@@ -330,14 +374,52 @@ function ChatView:newButtons(width)
     return ButtonTable:new{ width = width, buttons = { row1, row2 }, zero_sep = true, show_parent = self }
 end
 
-function ChatView:newScroll(html)
-    return ScrollHtmlWidget:new{
-        html_body = html,
-        css = VIEW_CSS,
-        width = self.body_width,
-        height = self.body_height,
+function ChatView:newBox(html)
+    local box = HtmlBoxWidget:new{
+        dimen = Geom:new{ w = self.body_width, h = self.body_height },
         dialog = self,
     }
+    box:setContent(html, self.css, self.font_size)
+    return box
+end
+
+-- Context used on the left, the page in the middle, the 5-hour limit on the right; small grey sans.
+function ChatView:newFooter()
+    local cfg = config()
+    local usage = self.chat.usage or {}
+    local box = self.body[1]
+    local left, center, right = "", "", ""
+    if shown(cfg, "show_context") and usage.context and usage.window and usage.window > 0 then
+        left = T(_("context %1%"), math.floor(100 * usage.context / usage.window + 0.5))
+    end
+    if self.pending and self.index == self:lastIndex() then
+        center = _("writing…")
+    elseif shown(cfg, "show_pages") and box.page_count > 1 then
+        center = box.page_number .. " / " .. box.page_count
+    end
+    if shown(cfg, "show_five_hour") and usage.five_hour then
+        right = T(_("5h %1%"), math.floor(100 * usage.five_hour + 0.5))
+    end
+    local inner = Geom:new{ w = self.body_width, h = self.footer_height }
+    local function text(s)
+        return TextWidget:new{ text = s, face = self.footer_face, fgcolor = Blitbuffer.COLOR_DARK_GRAY }
+    end
+    return FrameContainer:new{
+        bordersize = 0, padding = 0, padding_left = self.margin, padding_right = self.margin,
+        OverlapGroup:new{
+            dimen = inner,
+            LeftContainer:new{ dimen = inner, text(left) },
+            CenterContainer:new{ dimen = inner, text(center) },
+            RightContainer:new{ dimen = inner, text(right) },
+        },
+    }
+end
+
+function ChatView:updateFooter()
+    local old = self.footer[1]
+    self.footer[1] = self:newFooter()
+    old:free()
+    UIManager:setDirty(self, function() return "ui", self.footer.dimen end)
 end
 
 function ChatView:exchangeCount()
@@ -373,7 +455,7 @@ function ChatView:updateSubtitle()
     if self.pending and self.index == self:lastIndex() then
         text = _("Claude is writing…")
     elseif self:lastIndex() > 1 then
-        text = T(_("%1 of %2"), self.index, self:lastIndex())
+        text = T(_("Exchange %1 of %2"), self.index, self:lastIndex())
     else
         text = " "
     end
@@ -383,40 +465,44 @@ function ChatView:updateSubtitle()
     end
 end
 
+-- Puts a new box for exchange i in place of the old one and returns the old one, still to be freed.
+function ChatView:replaceBox(i, page)
+    local old = self.body[1]
+    local box = self:newBox(self:exchangeHtml(i))
+    box:setPageNumber(math.max(1, math.min(page, box.page_count)))
+    self.body[1] = box
+    return old
+end
+
 -- Shows exchange i at its first page, or at its last when paging back into it.
 function ChatView:show(i, at_end)
     self.index = i
-    local old = self.body[1]
-    local scroll = self:newScroll(self:exchangeHtml(i))
-    if at_end then
-        scroll.htmlbox_widget:setPageNumber(scroll.htmlbox_widget.page_count)
-        scroll:_updateScrollBar()
-    end
-    self.body[1] = scroll
-    old:free()
+    self:replaceBox(i, at_end and math.huge or 1):free()
     self:updateSubtitle()
     UIManager:setDirty(self, function() return "ui", self.body.dimen end)
+    self:updateFooter()
 end
 
--- Re-renders the exchange in view keeping the reader on their page: only that page is repainted when new text
--- lands on it; otherwise just the scroll bar grows.
+-- Re-renders the exchange in view keeping the reader on their page: that page is repainted only when new text
+-- lands on it; otherwise just the footer's page count changes.
 function ChatView:refresh()
-    local old = self.body[1]
-    local box = old.htmlbox_widget
-    local page, was_last = box.page_number, box.page_number == box.page_count
-    local scroll = self:newScroll(self:exchangeHtml(self.index))
-    scroll.htmlbox_widget:setPageNumber(math.min(page, scroll.htmlbox_widget.page_count))
-    scroll:_updateScrollBar()
-    self.body[1] = scroll
-    old:free()
-    local area = was_last and self.body.dimen or old.v_scroll_bar.dimen
-    UIManager:setDirty(self, function() return "ui", area end)
+    local box = self.body[1]
+    local was_last = box.page_number == box.page_count
+    self:replaceBox(self.index, box.page_number):free()
+    if was_last then
+        UIManager:setDirty(self, function() return "ui", self.body.dimen end)
+    end
+    self:updateFooter()
 end
 
 function ChatView:turn(direction)
-    local box = self.body[1].htmlbox_widget
-    if direction > 0 and box.page_number < box.page_count or direction < 0 and box.page_number > 1 then
-        self.body[1]:scrollText(direction)
+    local box = self.body[1]
+    local page = box.page_number + direction
+    if page >= 1 and page <= box.page_count then
+        box:setPageNumber(page)
+        box:freeBb()
+        UIManager:setDirty(self, function() return "partial", self.body.dimen end)
+        self:updateFooter()
         return true
     end
     local next_index = self.index + direction
@@ -431,7 +517,12 @@ function ChatView:onTurnSwipe(_, ges)
     return self:turn(forward[ges.direction] or 0)
 end
 
+-- The top edge toggles the header; while the header is up, any other tap just closes it.
 function ChatView:onTurnTap(_, ges)
+    if ges.pos.y < self.top_edge or self.header_shown then
+        self:setHeaderShown(not self.header_shown)
+        return true
+    end
     return self:turn(ges.pos.x < Screen:getWidth() / 2 and -1 or 1)
 end
 
