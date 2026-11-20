@@ -35,10 +35,11 @@ local Screen = Device.screen
 
 local HEADER = "<!--claudechat "
 local REQUEST_TIMEOUT_S = 600
--- Claude Code takes ~15 s to start before the first byte, so the per-read timeout must outlast that.
+local CONNECT_TIMEOUT_S = 15
+-- Longest silence before giving up; Claude Code can take ~15 s to start on a cold Mac.
 local READ_TIMEOUT_S = 60
--- Each repaint flashes a little on e-ink; once a second and a half reads as steady writing.
-local LIVE_REFRESH_S = 1.5
+-- How often the live page picks up new text: about one e-ink partial refresh.
+local LIVE_REFRESH_S = 0.4
 -- Wait after each failed attempt; the last entry is just the pause before giving up.
 local RETRY_DELAYS_S = { 2, 4, 8, 16, 0 }
 local MODELS = { { id = "sonnet", text = "Sonnet" }, { id = "opus", text = "Opus" }, { id = "haiku", text = "Haiku" } }
@@ -154,38 +155,70 @@ local function saveChat(file, chat)
     return os.rename(file .. ".part", file)
 end
 
+-- One plain HTTP POST that hands body bytes to on_body the moment they arrive (luasocket's http.request
+-- waits for 2 KB blocks). Returns the error, or nil once the relay closed the connection.
+local function postStreaming(host, path, headers, body, on_body)
+    local socket = require("socket")
+    local address, port = host:match("^([^:]+):?(%d*)$")
+    local sock = socket.tcp()
+    sock:settimeout(CONNECT_TIMEOUT_S)
+    local ok, err = sock:connect(address, tonumber(port) or 80)
+    if not ok then return err end
+    local request = { "POST " .. path .. " HTTP/1.0", "Host: " .. host, "Content-Length: " .. #body }
+    for name, value in pairs(headers) do
+        table.insert(request, name .. ": " .. value)
+    end
+    sock:send(table.concat(request, "\r\n") .. "\r\n\r\n" .. body)
+    sock:settimeout(0.2)
+    local head, in_body, idle_since = "", false, socket.gettime()
+    while true do
+        local data, recv_err, partial = sock:receive(8192)
+        local chunk = data or partial or ""
+        if chunk ~= "" then
+            idle_since = socket.gettime()
+            if in_body then
+                on_body(chunk)
+            else
+                head = head .. chunk
+                local split = head:find("\r\n\r\n", 1, true)
+                if split then
+                    in_body = true
+                    if #head > split + 3 then on_body(head:sub(split + 4)) end
+                end
+            end
+        end
+        if recv_err == "closed" then break end
+        if recv_err and recv_err ~= "timeout" then
+            sock:close()
+            return recv_err
+        end
+        if socket.gettime() - idle_since > READ_TIMEOUT_S then
+            sock:close()
+            return "timeout"
+        end
+    end
+    sock:close()
+end
+
 -- Runs in a forked subprocess: streams the relay's reply (one JSON object per line) into fd as it arrives.
 -- Only "no answer at all" is retried: Wi-Fi waking up or the relay restarting clear within seconds, while a
 -- relay error reply means Claude itself failed and gets the Retry button instead.
 local function streamFromRelay(cfg, payload, fd)
-    local http = require("socket.http")
-    local ltn12 = require("ltn12")
     local socket = require("socket")
-    local socketutil = require("socketutil")
     local body = JSON.encode(payload)
-    local code
+    local headers = { ["Content-Type"] = "application/json", ["X-Key"] = cfg.key }
+    local err
     for _, delay in ipairs(RETRY_DELAYS_S) do
         local received = false
-        socketutil:set_timeout(READ_TIMEOUT_S, REQUEST_TIMEOUT_S)
-        code = socket.skip(1, http.request{
-            url = "http://" .. cfg.host .. "/chat/stream",
-            method = "POST",
-            headers = { ["Content-Type"] = "application/json", ["Content-Length"] = #body, ["X-Key"] = cfg.key },
-            source = ltn12.source.string(body),
-            sink = function(chunk)
-                if chunk and chunk ~= "" then
-                    received = true
-                    ffiutil.writeToFD(fd, chunk)
-                end
-                return 1
-            end,
-        })
-        socketutil:reset_timeout()
+        err = postStreaming(cfg.host, "/chat/stream", headers, body, function(chunk)
+            received = true
+            ffiutil.writeToFD(fd, chunk)
+        end)
         if received then return end
         socket.sleep(delay)
     end
     ffiutil.writeToFD(fd, JSON.encode({
-        error = T("The Mac relay at %1 did not answer (%2). Is the Mac awake?", cfg.host, tostring(code)) }))
+        error = T("The Mac relay at %1 did not answer (%2). Is the Mac awake?", cfg.host, tostring(err)) }))
 end
 
 local function readAvailable(fd)
@@ -204,31 +237,33 @@ end
 local LIVE_CSS = "p { margin: 0 0 0.7em; text-align: justify; } h3 { font-variant: small-caps; }"
     .. " blockquote { margin: 0.6em 1.5em; font-style: italic; }"
 
--- Full-screen page that shows the reply while Claude writes it. Closing it cancels.
+-- Full-screen page that shows the reply while Claude writes it. Closing it cancels; once the reply is in,
+-- closing opens it as a book.
 local LiveReply = InputContainer:extend{
     title = nil,
-    on_cancel = nil,
+    on_close = nil,
 }
 
 function LiveReply:init()
     local width, height = Screen:getWidth(), Screen:getHeight()
     self.dimen = Geom:new{ x = 0, y = 0, w = width, h = height }
-    local title_bar = TitleBar:new{
+    self.title_bar = TitleBar:new{
         width = width,
         title = self.title,
         subtitle = _("Claude is writing…"),
         with_bottom_line = true,
-        close_callback = function() self.on_cancel() end,
+        show_parent = self,
+        close_callback = function() self.on_close() end,
     }
     self.padding = Size.padding.large
     self.body_width = width - 2 * self.padding
-    self.body_height = height - title_bar:getHeight() - 2 * self.padding
+    self.body_height = height - self.title_bar:getHeight() - 2 * self.padding
     self.body = FrameContainer:new{ bordersize = 0, padding = self.padding, self:newScroll("") }
     self[1] = FrameContainer:new{
         background = Blitbuffer.COLOR_WHITE,
         bordersize = 0,
         padding = 0,
-        VerticalGroup:new{ align = "left", title_bar, self.body },
+        VerticalGroup:new{ align = "left", self.title_bar, self.body },
     }
 end
 
@@ -242,18 +277,25 @@ function LiveReply:newScroll(html)
     }
 end
 
--- Shows the reply so far; follows the newest text unless the reader paged back.
+-- Shows the reply so far without moving the reader: they stay on their page, and only that page is
+-- repainted when the new text lands on it; otherwise just the scroll bar grows.
 function LiveReply:setHtml(html)
     local old = self.body[1]
-    local box = old.htmlbox_widget
-    local follow = box.page_number >= box.page_count
+    local page, was_last = old.htmlbox_widget.page_number, old.htmlbox_widget.page_number == old.htmlbox_widget.page_count
     local scroll = self:newScroll(html)
-    local page = follow and scroll.htmlbox_widget.page_count or math.min(box.page_number, scroll.htmlbox_widget.page_count)
-    scroll.htmlbox_widget:setPageNumber(page)
+    scroll.htmlbox_widget:setPageNumber(math.min(page, scroll.htmlbox_widget.page_count))
     scroll:_updateScrollBar()
     self.body[1] = scroll
     old:free()
-    UIManager:setDirty(self, function() return "ui", self.body.dimen end)
+    if was_last then
+        UIManager:setDirty(self, function() return "ui", self.body.dimen end)
+    else
+        UIManager:setDirty(self, function() return "ui", old.v_scroll_bar.dimen end)
+    end
+end
+
+function LiveReply:setDone(text)
+    self.title_bar:setSubTitle(text)
 end
 
 function LiveReply:onCloseWidget()
@@ -381,6 +423,8 @@ function ClaudeChat:prompt(title, on_text, text)
         input = text or config().unsent,
         input_hint = _("Your question"),
         allow_newline = true,
+        -- A fixed box: one that grows line by line jumps around and repaints as you type.
+        use_available_height = true,
         buttons = {{
             { text = _("Cancel"), id = "close", callback = function() UIManager:close(dialog) end },
             { text = _("Send"), is_enter_default = true, callback = function()
@@ -447,14 +491,22 @@ function ClaudeChat:streamReply(file, chat, prompt, label, cfg)
             result = obj
         end
     end
+    local finished = false
+    local function stop()
+        UIManager:unschedule(tick)
+        ffiutil.terminateSubProcess(pid)
+        ffi.C.close(fd)
+        reap()
+    end
     live = LiveReply:new{
         title = label or shorten(prompt, 70),
-        on_cancel = function()
-            UIManager:unschedule(tick)
-            ffiutil.terminateSubProcess(pid)
-            ffi.C.close(fd)
+        on_close = function()
             UIManager:close(live)
-            reap()
+            if finished then
+                self:openChat(file, "t" .. (#chat.turns - 1))
+                return
+            end
+            stop()
         end,
     }
     tick = function()
@@ -466,22 +518,31 @@ function ClaudeChat:streamReply(file, chat, prompt, label, cfg)
         end
         pending = pending:match("[^\n]*$")
         if done and pending ~= "" then take(pending) end
-        if #html > before then live:setHtml(partialHtml(html)) end
-        if not done then
+        if result and result.html then html = result.html end
+        if #html > before or (result and result.html) then live:setHtml(partialHtml(html)) end
+        if not done and not result then
             UIManager:scheduleIn(LIVE_REFRESH_S, tick)
             return
         end
-        UIManager:close(live)
-        self:onReply(result or { error = _("The connection dropped before Claude finished.") }, file, chat, prompt, label)
+        if not done then stop() end
+        result = result or { error = _("The connection dropped before Claude finished.") }
+        if not self:saveReply(result, file, chat, prompt, label) then
+            UIManager:close(live)
+            return
+        end
+        -- The reader may be mid-page; the book opens only when they close this page.
+        finished = true
+        live:setDone(_("Done · close to open it as a book"))
     end
     UIManager:show(live, "ui")
     UIManager:scheduleIn(LIVE_REFRESH_S, tick)
 end
 
-function ClaudeChat:onReply(res, file, chat, prompt, label)
+-- Saves the reply into the chat; on failure shows why and returns false.
+function ClaudeChat:saveReply(res, file, chat, prompt, label)
     if res.error or not res.html then
         self:showSendFailed(tostring(res.error or _("Empty answer.")), file, chat, prompt, label)
-        return
+        return false
     end
     local done = config()
     done.unsent = nil
@@ -492,9 +553,9 @@ function ClaudeChat:onReply(res, file, chat, prompt, label)
     local saved, err = saveChat(file, chat)
     if not saved then
         UIManager:show(InfoMessage:new{ text = T(_("Could not save the chat:\n%1"), tostring(err)) })
-        return
+        return false
     end
-    self:openChat(file, "t" .. (#chat.turns - 1))
+    return true
 end
 
 function ClaudeChat:showSendFailed(err, file, chat, prompt, label)

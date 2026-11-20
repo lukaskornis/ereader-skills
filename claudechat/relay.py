@@ -136,6 +136,7 @@ def stream_claude(prompt, session_id, model, emit):
     timer = threading.Timer(TIMEOUT_S, proc.kill)
     timer.start()
     result = None
+    text = []
     try:
         for line in proc.stdout:
             try:
@@ -143,12 +144,23 @@ def stream_claude(prompt, session_id, model, emit):
             except json.JSONDecodeError:
                 continue
             if event.get("type") == "result":
-                result = event
+                result = result or event
                 continue
-            delta = (event.get("event") or {}).get("delta") or {}
-            if event.get("type") == "stream_event" and delta.get("type") == "text_delta":
+            if event.get("type") != "stream_event" or result:
+                continue
+            inner = event.get("event") or {}
+            delta = inner.get("delta") or {}
+            if delta.get("type") == "text_delta":
+                text.append(delta["text"])
                 emit({"delta": delta["text"]})
+            elif inner.get("type") == "message_stop":
+                # The result line comes ~1.5 s later; the reader needn't wait. Claude keeps running
+                # until it has saved the session, so the next --resume finds it.
+                result = {"session_id": event.get("session_id"), "result": "".join(text)}
+                emit(finish(result))
         proc.wait()
+        if result and "is_error" not in result:
+            return
         if result:
             return emit(finish(result))
         if not timer.is_alive():
