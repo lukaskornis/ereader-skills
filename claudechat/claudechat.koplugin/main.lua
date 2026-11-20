@@ -311,6 +311,7 @@ end
 
 -- Reading settings, all changed in the settings pane; size and margin are in unscaled pixels.
 local TEXT_DEFAULTS = { text_size = 24, line_spacing = 1.4, margin = 14 }
+local TEXT_SIZE_MIN, TEXT_SIZE_MAX = 14, 40
 
 local function textSetting(cfg, key)
     return cfg[key] or TEXT_DEFAULTS[key]
@@ -415,6 +416,8 @@ function ChatView:init()
     self.ges_events = {
         TurnSwipe = { GestureRange:new{ ges = "swipe", range = function() return self.body.dimen end } },
         TurnTap = { GestureRange:new{ ges = "tap", range = function() return self.body.dimen end } },
+        Spread = { GestureRange:new{ ges = "spread", range = function() return self.body.dimen end } },
+        Pinch = { GestureRange:new{ ges = "pinch", range = function() return self.body.dimen end } },
         -- Hold and drag selects: the box handles these first and calls args with the text on release.
         HoldStartText = { GestureRange:new{ ges = "hold", range = function() return self.body.dimen end } },
         HoldPanText = { GestureRange:new{ ges = "hold_pan", range = function() return self.body.dimen end } },
@@ -679,6 +682,19 @@ function ChatView:applySettings()
     UIManager:setDirty(self, "full")
 end
 
+-- Spread and pinch change the text size by two points, saved like the Settings stepper.
+function ChatView:zoom(direction)
+    local cfg = config()
+    local size = textSetting(cfg, "text_size") + 2 * direction
+    cfg.text_size = math.max(TEXT_SIZE_MIN, math.min(TEXT_SIZE_MAX, size))
+    saveConfig(cfg)
+    self:applySettings()
+    return true
+end
+
+function ChatView:onSpread() return self:zoom(1) end
+function ChatView:onPinch() return self:zoom(-1) end
+
 function ChatView:onCloseWidget()
     self.body[1]:free()
 end
@@ -836,7 +852,7 @@ local SettingsPane = InputContainer:extend{
 }
 
 local TEXT_STEPS = {
-    { key = "text_size", label = _("Size"), step = 1, min = 14, max = 40, format = "%d" },
+    { key = "text_size", label = _("Size"), step = 1, min = TEXT_SIZE_MIN, max = TEXT_SIZE_MAX, format = "%d" },
     { key = "line_spacing", label = _("Line spacing"), step = 0.1, min = 1.0, max = 2.2, format = "%.1f" },
     { key = "margin", label = _("Margin"), step = 2, min = 0, max = 40, format = "%d px" },
 }
