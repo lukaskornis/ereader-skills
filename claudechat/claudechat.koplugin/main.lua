@@ -23,6 +23,8 @@ local T = require("ffi/util").template
 
 local HEADER = "<!--claudechat "
 local REQUEST_TIMEOUT_S = 600
+-- Wait after each failed attempt; the last entry is just the pause before giving up.
+local RETRY_DELAYS_S = { 2, 4, 8, 16, 0 }
 local MODELS = { { id = "sonnet", text = "Sonnet" }, { id = "opus", text = "Opus" }, { id = "haiku", text = "Haiku" } }
 
 local STEER = {
@@ -137,27 +139,31 @@ local function saveChat(file, chat)
 end
 
 -- Runs in a forked subprocess (Trapper), so it may block; returns the relay's JSON body as a string.
+-- Only "no answer at all" is retried: Wi-Fi waking up or the relay restarting clear within seconds, while a
+-- relay error reply means Claude itself failed and gets the Retry button instead.
 local function postToRelay(cfg, payload)
     local http = require("socket.http")
     local ltn12 = require("ltn12")
     local socket = require("socket")
     local socketutil = require("socketutil")
     local body = JSON.encode(payload)
-    local sink = {}
-    socketutil:set_timeout(15, REQUEST_TIMEOUT_S)
-    local code = socket.skip(1, http.request{
-        url = "http://" .. cfg.host .. "/chat",
-        method = "POST",
-        headers = { ["Content-Type"] = "application/json", ["Content-Length"] = #body, ["X-Key"] = cfg.key },
-        source = ltn12.source.string(body),
-        sink = socketutil.table_sink(sink),
-    })
-    socketutil:reset_timeout()
-    local text = table.concat(sink)
-    if text == "" then
-        return JSON.encode({ error = T("The Mac relay at %1 did not answer (%2). Is the Mac awake?", cfg.host, tostring(code)) })
+    local code
+    for _, delay in ipairs(RETRY_DELAYS_S) do
+        local sink = {}
+        socketutil:set_timeout(15, REQUEST_TIMEOUT_S)
+        code = socket.skip(1, http.request{
+            url = "http://" .. cfg.host .. "/chat",
+            method = "POST",
+            headers = { ["Content-Type"] = "application/json", ["Content-Length"] = #body, ["X-Key"] = cfg.key },
+            source = ltn12.source.string(body),
+            sink = socketutil.table_sink(sink),
+        })
+        socketutil:reset_timeout()
+        local text = table.concat(sink)
+        if text ~= "" then return text end
+        socket.sleep(delay)
     end
-    return text
+    return JSON.encode({ error = T("The Mac relay at %1 did not answer (%2). Is the Mac awake?", cfg.host, tostring(code)) })
 end
 
 function ClaudeChat:init()
@@ -272,11 +278,13 @@ function ClaudeChat:open()
     UIManager:show(dialog)
 end
 
--- Asks for text with the on-screen keyboard, then calls on_text(text).
-function ClaudeChat:prompt(title, on_text)
+-- Asks for text with the on-screen keyboard, then calls on_text(text). Starts from text, or else from the
+-- last typed question that never got an answer.
+function ClaudeChat:prompt(title, on_text, text)
     local dialog
     dialog = InputDialog:new{
         title = title,
+        input = text or config().unsent,
         input_hint = _("Your question"),
         allow_newline = true,
         buttons = {{
@@ -309,6 +317,12 @@ function ClaudeChat:send(file, chat, prompt, label)
         UIManager:show(InfoMessage:new{ text = _("Not paired with the Mac. On the Mac run:\nrelay.py pair") })
         return
     end
+    -- Typed questions (no label) are kept until answered, so a failure, a dismiss or a crash never loses them.
+    if not label then
+        cfg.unsent = prompt
+        saveConfig(cfg)
+        G_reader_settings:flush()
+    end
     NetworkMgr:runWhenOnline(function()
         Trapper:wrap(function()
             local payload = { prompt = prompt, session_id = chat.session_id, model = cfg.model or "sonnet" }
@@ -321,9 +335,12 @@ function ClaudeChat:send(file, chat, prompt, label)
                 res = { error = T(_("Unreadable answer from the relay:\n%1"), shorten(tostring(body), 200)) }
             end
             if res.error or not res.html then
-                UIManager:show(InfoMessage:new{ text = tostring(res.error or _("Empty answer.")) })
+                self:showSendFailed(tostring(res.error or _("Empty answer.")), file, chat, prompt, label)
                 return
             end
+            local done = config()
+            done.unsent = nil
+            saveConfig(done)
             chat.session_id = res.session_id
             table.insert(chat.turns, { role = "user", text = prompt, label = label })
             table.insert(chat.turns, { role = "assistant", html = res.html })
@@ -335,6 +352,28 @@ function ClaudeChat:send(file, chat, prompt, label)
             self:openChat(file, "t" .. (#chat.turns - 1))
         end)
     end)
+end
+
+function ClaudeChat:showSendFailed(err, file, chat, prompt, label)
+    local dialog
+    local buttons = {{
+        { text = _("Close"), callback = function() UIManager:close(dialog) end },
+        { text = _("Retry"), callback = function()
+            UIManager:close(dialog)
+            self:send(file, chat, prompt, label)
+        end },
+    }}
+    if not label then
+        table.insert(buttons[1], 2, { text = _("Edit"), callback = function()
+            UIManager:close(dialog)
+            self:prompt(_("Edit question"), function(text) self:send(file, chat, text) end, prompt)
+        end })
+    end
+    dialog = ButtonDialog:new{
+        title = err .. "\n\n" .. (label and _("Not sent.") or _("Your question is kept.")),
+        buttons = buttons,
+    }
+    UIManager:show(dialog)
 end
 
 function ClaudeChat:openChat(file, anchor)

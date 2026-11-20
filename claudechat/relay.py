@@ -17,6 +17,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 8787
@@ -29,6 +30,8 @@ WORK_DIR = os.path.join(STATE, "work")
 KEYCHAIN_SERVICE = "claudechat-token"
 LABEL = "com.lukas.claudechat-relay"
 PLIST = os.path.expanduser(f"~/Library/LaunchAgents/{LABEL}.plist")
+WATCHDOG_LABEL = f"{LABEL}-watchdog"
+WATCHDOG_PLIST = os.path.expanduser(f"~/Library/LaunchAgents/{WATCHDOG_LABEL}.plist")
 INSTALLED = os.path.expanduser("~/.local/bin/claudechat-relay")
 LOG = os.path.expanduser("~/Library/Logs/claudechat-relay.log")
 MODELS = {"sonnet", "opus", "haiku"}
@@ -87,7 +90,9 @@ def ask_claude(prompt, session_id, model):
     if not token:
         return {"error": "No subscription token on the Mac. Run: relay.py login"}
     env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE", "ANTHROPIC"))}
-    env.update(CLAUDE_CONFIG_DIR=CLAUDE_HOME, CLAUDE_CODE_OAUTH_TOKEN=token)
+    # A separate config dir alone still loads ~/.claude/CLAUDE.md and rules; these switch that off.
+    env.update(CLAUDE_CONFIG_DIR=CLAUDE_HOME, CLAUDE_CODE_OAUTH_TOKEN=token,
+               CLAUDE_CODE_DISABLE_CLAUDE_MDS="1", CLAUDE_CODE_DISABLE_AUTO_MEMORY="1")
     cmd = [claude_bin(), "-p", prompt, "--model", model, "--output-format", "json",
            "--tools", "", "--system-prompt", SYSTEM_PROMPT]
     if session_id:
@@ -182,6 +187,30 @@ def pair(device=None):
     print(f"{device or 'default'}: {'paired with ' + host if ok else 'not reachable, pair later'}")
 
 
+def install_watchdog(uid):
+    # KeepAlive only covers crashes; this reloads the relay if it ever gets unloaded.
+    check = (f"/bin/launchctl print gui/{uid}/{LABEL} >/dev/null 2>&1 || "
+             f"/bin/launchctl bootstrap gui/{uid} {PLIST}")
+    plist = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>{WATCHDOG_LABEL}</string>
+  <key>ProgramArguments</key><array><string>/bin/sh</string><string>-c</string><string>{check}</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>300</integer>
+</dict></plist>
+"""
+    with open(WATCHDOG_PLIST, "w") as f:
+        f.write(plist)
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{WATCHDOG_LABEL}"], capture_output=True)
+    for _ in range(20):
+        if subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", WATCHDOG_PLIST],
+                          capture_output=True).returncode == 0:
+            return
+        time.sleep(0.5)
+    die("Watchdog failed to load.")
+
+
 def install():
     read_key()
     # launchd may not read ~/Documents (privacy rules), so the agent runs an installed copy.
@@ -202,7 +231,14 @@ def install():
         f.write(plist)
     uid = str(os.getuid())
     subprocess.run(["launchctl", "bootout", f"gui/{uid}/{LABEL}"], capture_output=True)
-    subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", PLIST], check=True)
+    # Bootstrap right after bootout races launchd teardown and fails, leaving the relay unloaded.
+    for _ in range(20):
+        if subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", PLIST], capture_output=True).returncode == 0:
+            break
+        time.sleep(0.5)
+    else:
+        die("launchctl bootstrap kept failing; the relay is not running.")
+    install_watchdog(uid)
     print(f"Relay running on {lan_ip()}:{PORT}, starts at login.")
     with open(os.path.expanduser("~/.config/ink/devices.json")) as f:
         for name in json.load(f)["devices"]:
