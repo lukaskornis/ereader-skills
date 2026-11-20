@@ -1,6 +1,6 @@
 --[[
 Claude chat: each conversation is one HTML file in <home>/Claude, shown in a full-screen chat view (one question
-and its reply at a time, steering buttons below) and also readable as a book (fonts, margins, TOC of questions).
+and its reply at a time, follow-ups under the latest) and also readable as a book (fonts, margins, TOC of questions).
 The file carries its own state (session id, turns) in a leading comment, so it survives moves and renames.
 Replies come from the Mac relay (claudechat/relay.py), which runs `claude -p` on the subscription, and are shown
 live as Claude writes them.
@@ -10,7 +10,6 @@ book they start a new chat about the passage.
 ]]
 local Blitbuffer = require("ffi/blitbuffer")
 local ButtonDialog = require("ui/widget/buttondialog")
-local ButtonTable = require("ui/widget/buttontable")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local DataStorage = require("datastorage")
 local Device = require("device")
@@ -269,7 +268,34 @@ h3 { font-variant: small-caps; }
 p { margin: 0 0 0.7em; text-align: justify; }
 p.thinking { font-style: italic; }
 blockquote { margin: 0.6em 1.5em; font-style: italic; }
-]] .. CONTENT_CSS
+]] .. CONTENT_CSS .. [[
+div.follow { margin-top: 1.4em; padding-top: 0.3em; border-top: 1px solid #888; }
+table.follow { width: 100%; margin: 0; }
+div.follow { page-break-inside: avoid; }
+table.follow td { border: none; padding: 0.3em 0; width: 50%; }
+tr.last td { border-top: 1px solid #888; padding-top: 0.6em; }
+table.follow a { color: black; text-decoration: none; }
+a.ask { font-weight: bold; }
+]]
+
+-- Under the latest reply: steering in two columns, then Ask and New chat.
+local FOLLOW_ROWS = { { "deeper", "shorter" }, { "example", "counter" }, { "simpler" } }
+
+local function followHtml()
+    local text = {}
+    for _, s in ipairs(STEER) do text[s.id] = s.text end
+    local function cell(id, class, label)
+        if not id then return "<td></td>" end
+        return '<td><a href="claude:' .. id .. '"' .. (class and ' class="' .. class .. '"' or "") .. ">→ "
+            .. escape(label or text[id]) .. "</a></td>"
+    end
+    local rows = {}
+    for _, row in ipairs(FOLLOW_ROWS) do
+        table.insert(rows, "<tr>" .. cell(row[1]) .. cell(row[2]) .. "</tr>")
+    end
+    table.insert(rows, '<tr class="last">' .. cell("ask", "ask", _("Ask…")) .. cell("new", nil, _("New chat")) .. "</tr>")
+    return '<div class="follow"><table class="follow">' .. table.concat(rows) .. "</table></div>"
+end
 
 -- Reading settings, all changed in the settings pane; size and margin are in unscaled pixels.
 local TEXT_DEFAULTS = { text_size = 24, line_spacing = 1.4, margin = 14 }
@@ -318,9 +344,8 @@ function ChatView:init()
     self.css = VIEW_CSS .. string.format("body { line-height: %.2f; }", textSetting(cfg, "line_spacing"))
     self.footer_face = Font:getFace("smallffont")
     self.footer_height = 2 * self.footer_face.size
-    self.buttons = self:newButtons(width)
     self.body_width = width - 2 * self.margin
-    self.body_height = height - self.margin - self.footer_height - self.buttons:getSize().h
+    self.body_height = height - self.margin - self.footer_height
     self.body = FrameContainer:new{
         bordersize = 0, padding = self.margin, padding_bottom = 0, self:newBox(""),
     }
@@ -329,7 +354,7 @@ function ChatView:init()
         background = Blitbuffer.COLOR_WHITE,
         bordersize = 0,
         padding = 0,
-        VerticalGroup:new{ align = "left", self.body, self.buttons, self.footer },
+        VerticalGroup:new{ align = "left", self.body, self.footer },
     }
     self.top_edge = math.floor(height / 12)
     -- Reached only when the reply itself cannot turn further, or for sideways swipes it ignores.
@@ -358,20 +383,6 @@ end
 function ChatView:setHeaderShown(show)
     self.header_shown = show
     UIManager:setDirty(self, function() return "ui", self.title_bar.dimen end)
-end
-
-function ChatView:newButtons(width)
-    local function button(id, text)
-        return { text = text, enabled_func = function() return not self.pending end,
-                 callback = function() self.on_steer(id) end }
-    end
-    local row1, row2 = {}, {}
-    for i, s in ipairs(STEER) do
-        table.insert(i <= 4 and row1 or row2, button(s.id, s.text))
-    end
-    table.insert(row2, button("ask", _("Ask…")))
-    table.insert(row2, button("new", _("New chat")))
-    return ButtonTable:new{ width = width, buttons = { row1, row2 }, zero_sep = true, show_parent = self }
 end
 
 function ChatView:newBox(html)
@@ -443,7 +454,8 @@ function ChatView:exchangeHtml(i)
         end
         return tag
     end)
-    return "<h2>" .. escape(question) .. "</h2>" .. reply
+    local follow = (i == self:exchangeCount() and not self.pending) and followHtml() or ""
+    return "<h2>" .. escape(question) .. "</h2>" .. reply .. follow
 end
 
 function ChatView:lastIndex()
@@ -517,10 +529,24 @@ function ChatView:onTurnSwipe(_, ges)
     return self:turn(forward[ges.direction] or 0)
 end
 
+-- claude: links on the page steer the chat; checked here rather than through HtmlBoxWidget's link callback,
+-- which stays silent when "tap to follow links" is off.
+function ChatView:linkAt(pos)
+    local box = self.body[1]
+    local at = box:getPosFromAbsPos(pos)
+    local link = at and box:getLinkByPosition(at)
+    return link and tostring(link.uri or ""):match("^claude:(%a+)")
+end
+
 -- The top edge toggles the header; while the header is up, any other tap just closes it.
 function ChatView:onTurnTap(_, ges)
     if ges.pos.y < self.top_edge or self.header_shown then
         self:setHeaderShown(not self.header_shown)
+        return true
+    end
+    local id = not self.pending and self:linkAt(ges.pos)
+    if id then
+        self.on_steer(id)
         return true
     end
     return self:turn(ges.pos.x < Screen:getWidth() / 2 and -1 or 1)
@@ -529,15 +555,10 @@ end
 function ChatView:onTurnForward() return self:turn(1) end
 function ChatView:onTurnBack() return self:turn(-1) end
 
-function ChatView:repaintButtons()
-    UIManager:setDirty(self, function() return "ui", self.buttons.dimen end)
-end
-
 -- A new question goes out: it gets its own exchange, shown at once with "Thinking" until text arrives.
 function ChatView:beginPending(question)
     self.pending = { question = question, html = "", dots = 1 }
     self:show(self:lastIndex())
-    self:repaintButtons()
 end
 
 function ChatView:updatePending(html, dots)
@@ -551,7 +572,6 @@ end
 function ChatView:endPending()
     local was_live = self.index == self:lastIndex()
     self.pending = nil
-    self:repaintButtons()
     if self:exchangeCount() == 0 then return end
     if was_live and self.index <= self:exchangeCount() then
         self:refresh()
