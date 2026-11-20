@@ -39,6 +39,8 @@ Learned from three apps built in one day: Claude chat, Word search, Paint. Read 
 - For human-only checks (feel, multitouch), write `<app>/checklist-sliceN.md`: short, numbered, expected results.
 
 ## Seeing the screen cheaply
+- Mocks: send the SVG itself to the panel (SendUserFile, render). qlmanage crops an SVG thumbnail to a square and cost three rounds (2026-11-20).
+- Pulling a device file with `ink sh cat` under an agent stops at 150 lines: prefix `INK_ALL=1`. Check the device copy of Shelf before overwriting it: it can be newer than the branch.
 - Check state as text first: `ink eval` returning page numbers, a mode, a window-stack name list. One line, against an image.
 - Find tap targets by probing, not by reading pixels: scan `ui.link:getLinkFromGes({pos = Geom:new{x=…, y=…, w=0, h=0}})` over a grid and return "x y".
 - Pixel questions: `bb:getPixel(x, y):getColor8().a` in hex settles it in one call where a zoomed shot stays ambiguous.
