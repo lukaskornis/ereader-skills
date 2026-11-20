@@ -436,39 +436,70 @@ function MinesWidget:paintHeader(bb)
     end
 end
 
+-- One hatched tile (45° lines on white), built once per cell size and blitted for every hidden cell:
+-- per-row hatching for a whole board was hundreds of thousands of paintRect calls.
+function MinesWidget:hatchTile(side)
+    if self.hatch and self.hatch_side == side then return self.hatch end
+    if self.hatch then self.hatch:free() end
+    local tile = Blitbuffer.new(side, side, Blitbuffer.TYPE_BB8)
+    tile:fill(WHITE)
+    local step = math.max(5, math.floor(side * 0.09 + 0.5))
+    local w = math.max(1, math.floor(side * 0.025 + 0.5))
+    for y = 0, side - 1 do
+        for x = (step - y % step) % step, side - 1, step do
+            tile:paintRect(x, y, math.min(w, side - x), 1, BLACK)
+        end
+    end
+    self.hatch, self.hatch_side = tile, side
+    return tile
+end
+
 function MinesWidget:paintBoard(bb)
     local g, L = self.game, self.layout
     local cell = L.cell
-    local gap = math.max(2, math.floor(cell * 0.06))
-    local rad = math.floor(cell * 0.14)
-    local edge = math.max(2, math.floor(cell * 0.035))
+    local gap = math.max(2, math.floor(cell * 0.07))
+    local side = cell - 2 * gap
     local px = cell * 0.58
     local lost = g.boom ~= nil
+    local hatch = self:hatchTile(side)
+
+    -- Tiny dots along every grid line; tiles cover them, so they show in the gaps and the open area.
+    local dot = math.max(2, math.floor(cell * 0.025))
+    local step = cell / 5
+    for r = 0, g.rows do
+        local y = math.floor(L.gy + r * cell - dot / 2)
+        for k = 0, g.cols * 5 do
+            bb:paintRect(math.floor(L.gx + k * step - dot / 2), y, dot, dot, BLACK)
+        end
+    end
+    for c = 0, g.cols do
+        local x = math.floor(L.gx + c * cell - dot / 2)
+        for k = 0, g.rows * 5 do
+            bb:paintRect(x, math.floor(L.gy + k * step - dot / 2), dot, dot, BLACK)
+        end
+    end
+
     for i = 1, g.rows * g.cols do
         local b = self:cellBox(i)
         local cx, cy = b.x + cell / 2, b.y + cell / 2
         local s = Logic.cell(g, i)
         local is_mine = g.bomb and g.bomb[i]
         if s == "o" and i == g.boom then
-            bb:paintRoundedRect(b.x + gap, b.y + gap, cell - 2 * gap, cell - 2 * gap, BLACK, rad)
+            bb:paintRect(b.x + gap, b.y + gap, side, side, BLACK)
             mine(bb, cx, cy, cell * 0.8, WHITE, BLACK)
         elseif s == "o" then
             local n = Logic.count(g, i)
             if n > 0 then textCentered(bb, tostring(n), cx, cy, px, true) end
-            -- A dot at each corner keeps the open area readable as a grid.
-            bb:paintRect(b.x - 1, b.y - 1, 3, 3, BLACK)
         elseif lost and is_mine and s ~= "f" then
             mine(bb, cx, cy, cell * 0.7, BLACK, WHITE)
         elseif s == "f" then
-            bb:paintRoundedRect(b.x + gap, b.y + gap, cell - 2 * gap, cell - 2 * gap, BLACK, rad)
-            flag(bb, cx, cy, cell * 0.72, WHITE)
+            flag(bb, cx, cy, cell * 0.72, BLACK)
             if lost and not is_mine then closeIcon(bb, cx, cy, cell * 0.8) end
         else
-            -- Hidden cells are light outlined tiles: a full board of solid black felt heavy.
-            bb:paintBorder(b.x + gap, b.y + gap, cell - 2 * gap, cell - 2 * gap, edge, BLACK, rad)
+            bb:blitFrom(hatch, b.x + gap, b.y + gap, 0, 0, side, side)
             if i == g.hint then
-                capsule(bb, cx, cy, cx, cy, cell * 0.2, BLACK)
-                capsule(bb, cx, cy, cx, cy, cell * 0.2 - edge, WHITE)
+                capsule(bb, cx, cy, cx, cy, cell * 0.24, WHITE)
+                capsule(bb, cx, cy, cx, cy, cell * 0.16, BLACK)
             end
         end
     end
@@ -690,6 +721,10 @@ function MinesWidget:onCloseWidget()
     if self.frame then
         self.frame:free()
         self.frame = nil
+    end
+    if self.hatch then
+        self.hatch:free()
+        self.hatch = nil
     end
 end
 

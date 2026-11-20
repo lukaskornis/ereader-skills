@@ -14,7 +14,7 @@ KOReader plugin: Minesweeper made for e-ink. Shelf > Apps > Mines, or Tools menu
 
 ## Made for e-ink
 - No live clock: an idle board never refreshes. Time counts only while the game is on screen.
-- Hidden cells are thin outlined tiles (solid black felt intimidating), flags solid black tiles, open cells plain white with corner dots. Pure black and white, every frame thresholded, so DU shows it exactly and nothing flashes.
+- Hidden cells are hatched tiles (45° lines, one cached tile blitted per cell) with a small gap; tiny dots run along every grid line, five per cell edge, so gaps and the open area read as dotted paper. Flags are plain black on white. Chosen from mocks in `mock/` (B3 with smaller, denser dots). Full board render about 120 ms on the Aura One.
 - Each move copies only the changed cells' box (plus the header) to the panel with DU. A mine or a win repaints the screen once.
 
 ## Files
