@@ -765,6 +765,9 @@ function ShelfWidget:buildApps()
     if self.ui.wordsearch then
         tiles[#tiles + 1] = self:appTile(size, "wordsearch", "Word search", function() self.ui.wordsearch:open() end)
     end
+    if self.ui.minesweeper then
+        tiles[#tiles + 1] = self:appTile(size, "bomb", "Mines", function() self.ui.minesweeper:open() end)
+    end
     if self.ui.claudechat then
         tiles[#tiles + 1] = self:appTile(size, "claude", "Claude", function() self.ui.claudechat:open() end)
     end

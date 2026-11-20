@@ -13,6 +13,7 @@ Make an old e-reader fast and modern with KOReader, then develop and test on it 
 | `koreader-apps.md` | Starting or continuing a plugin app: layout, Mac logic tests, Shelf tile, UI rules, fast dev loop, cheap screen checks, handoffs, extension points |
 | `koreader-patches.md` | Writing user patches or plugins: stages, menu items, refresh, busybox gotchas |
 | `koreader-redraw.md` | How KOReader repaints and refreshes: setDirty, modes, promotion, e-ink settings, measured timings. Read before uimanager.lua |
+| `minesweeper/minesweeper.md` | The Minesweeper plugin: four sizes, three difficulties, no-guess boards, hints, undo, Mac logic test |
 | `typewriter/typewriter.md` | The typewriter: type on the Kobo with the Mac keyboard (`ink type`), plugin, relay, latency |
 | `koboot/koboot.md` | Kobo boots straight into KOReader (tap to stay in Nickel): udev hook, crash guard, skip flag, recovery |
 | `claudechat/claudechat.md` | Claude chat on the reader: Mac relay on the subscription, chats as books, steering links, ask about selected text |
