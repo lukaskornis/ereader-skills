@@ -343,6 +343,7 @@ local ChatView = InputContainer:extend{
     on_book = nil, -- function(exchange)
     on_close = nil,
     on_settings = nil,
+    on_select = nil, -- function(action, text): "more" or "new"
     covers_fullscreen = true,
 }
 
@@ -393,6 +394,13 @@ function ChatView:init()
     self.ges_events = {
         TurnSwipe = { GestureRange:new{ ges = "swipe", range = function() return self.body.dimen end } },
         TurnTap = { GestureRange:new{ ges = "tap", range = function() return self.body.dimen end } },
+        -- Hold and drag selects: the box handles these first and calls args with the text on release.
+        HoldStartText = { GestureRange:new{ ges = "hold", range = function() return self.body.dimen end } },
+        HoldPanText = { GestureRange:new{ ges = "hold_pan", range = function() return self.body.dimen end } },
+        HoldReleaseText = {
+            GestureRange:new{ ges = "hold_release", range = function() return self.body.dimen end },
+            args = function(text) self:onSelected(text) end,
+        },
     }
     self.key_events = {
         TurnForward = { { Device.input.group.PgFwd } },
@@ -421,6 +429,7 @@ function ChatView:newBox(html)
     local box = HtmlBoxWidget:new{
         dimen = Geom:new{ w = self.body_width, h = self.body_height },
         dialog = self,
+        highlight_text_selection = true,
     }
     box:setContent(html, self.css, self.font_size)
     return box
@@ -611,6 +620,30 @@ function ChatView:endPending()
         self:show(math.min(self.index, self:exchangeCount()))
     end
     self:updateSubtitle()
+end
+
+-- Copy, More on that (in this chat) or New chat for the selected text; the highlight goes when the row does.
+-- While a reply is being written only Copy is offered: a second question would cut it off.
+function ChatView:onSelected(text)
+    local box = self.body[1]
+    local dialog
+    local function unselect()
+        if box:clearHighlight() then box:redrawHighlight() end
+    end
+    local function action(label, run)
+        return { text = label, callback = function()
+            UIManager:close(dialog)
+            unselect()
+            run()
+        end }
+    end
+    local row = { action(_("Copy"), function() Device.input.setClipboardText(text) end) }
+    if not self.pending then
+        table.insert(row, action(_("More on that"), function() self.on_select("more", text) end))
+        table.insert(row, action(_("New chat"), function() self.on_select("new", text) end))
+    end
+    dialog = ButtonDialog:new{ buttons = { row }, tap_close_callback = unselect }
+    UIManager:show(dialog)
 end
 
 -- The settings changed: lay the exchange in view out again from its first page.
@@ -1119,6 +1152,7 @@ function ClaudeChat:showChatView(file, chat)
         end,
         on_close = function() self:closeChatView() end,
         on_settings = function() self:showSettings() end,
+        on_select = function(action, text) self:askFromView(view, action, text) end,
     }
     view.file = file
     self.view = view
@@ -1332,6 +1366,21 @@ function ClaudeChat:askAbout(action, selected, before, after)
         prompt = prompt .. T("\n\nIt appears in this passage: \"…%1 %2 %3…\"", before or "", phrase, after or "")
     end
     self:continueOrStart(prompt, string.format(action.label, shorten(selected, 50)))
+end
+
+-- Text selected in the chat view: More on that continues the chat, New chat starts one about it.
+function ClaudeChat:askFromView(view, action, selected)
+    local more
+    for _, a in ipairs(LOOKUP) do
+        if a.id == "more" then more = a end
+    end
+    local prompt = string.format(more.prompt, shorten(selected, 300))
+    local label = string.format(more.label, shorten(selected, 50))
+    if action == "new" then
+        self:startChat(label, prompt .. T("\n\n(From my chat \"%1\".)", view.chat.title), label)
+    else
+        self:send(view.file, view.chat, prompt, label)
+    end
 end
 
 -- Multi-word selections open the highlight dialog; a single held word opens the dictionary popup.
