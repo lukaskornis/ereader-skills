@@ -441,6 +441,7 @@ function MinesWidget:paintBoard(bb)
     local cell = L.cell
     local gap = math.max(2, math.floor(cell * 0.06))
     local rad = math.floor(cell * 0.14)
+    local edge = math.max(2, math.floor(cell * 0.035))
     local px = cell * 0.58
     local lost = g.boom ~= nil
     for i = 1, g.rows * g.cols do
@@ -458,14 +459,16 @@ function MinesWidget:paintBoard(bb)
             bb:paintRect(b.x - 1, b.y - 1, 3, 3, BLACK)
         elseif lost and is_mine and s ~= "f" then
             mine(bb, cx, cy, cell * 0.7, BLACK, WHITE)
-        else
+        elseif s == "f" then
             bb:paintRoundedRect(b.x + gap, b.y + gap, cell - 2 * gap, cell - 2 * gap, BLACK, rad)
-            if s == "f" then
-                flag(bb, cx, cy, cell * 0.72, WHITE)
-                if lost and not is_mine then closeIcon(bb, cx, cy, cell * 0.8) end
-            elseif i == g.hint then
-                capsule(bb, cx, cy, cx, cy, cell * 0.24, WHITE)
-                capsule(bb, cx, cy, cx, cy, cell * 0.16, BLACK)
+            flag(bb, cx, cy, cell * 0.72, WHITE)
+            if lost and not is_mine then closeIcon(bb, cx, cy, cell * 0.8) end
+        else
+            -- Hidden cells are light outlined tiles: a full board of solid black felt heavy.
+            bb:paintBorder(b.x + gap, b.y + gap, cell - 2 * gap, cell - 2 * gap, edge, BLACK, rad)
+            if i == g.hint then
+                capsule(bb, cx, cy, cx, cy, cell * 0.2, BLACK)
+                capsule(bb, cx, cy, cx, cy, cell * 0.2 - edge, WHITE)
             end
         end
     end
@@ -648,7 +651,7 @@ function MinesWidget:act(pos, flagging)
     if s == "o" then
         self:move(Logic.chord(g, i))
     elseif flagging then
-        if g.bomb then self:move(Logic.flag(g, i)) end
+        self:move(Logic.flag(g, i))
     elseif s == "h" then
         self:move(Logic.dig(g, i, setting("logical", true)))
     end
@@ -668,7 +671,8 @@ function MinesWidget:onTap(pos)
 end
 
 function MinesWidget:onHold(pos)
-    if self.mode == "game" and not self.game.done then self:act(pos, not self.flagging) end
+    -- Hold always marks or unmarks, whatever the toggle says.
+    if self.mode == "game" and not self.game.done then self:act(pos, true) end
     return true
 end
 
