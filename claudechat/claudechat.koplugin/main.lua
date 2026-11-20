@@ -48,7 +48,11 @@ local READ_TIMEOUT_S = 60
 local LIVE_REFRESH_S = 0.4
 -- Wait after each failed attempt; the last entry is just the pause before giving up.
 local RETRY_DELAYS_S = { 2, 4, 8, 16, 0 }
-local MODELS = { { id = "sonnet", text = "Sonnet" }, { id = "opus", text = "Opus" }, { id = "haiku", text = "Haiku" } }
+local MODELS = { { id = "haiku", text = "Haiku" }, { id = "sonnet", text = "Sonnet" }, { id = "opus", text = "Opus" } }
+local EFFORTS = { { id = "low", text = "Low" }, { id = "medium", text = "Med" }, { id = "high", text = "High" },
+                  { id = "max", text = "Max" } }
+local DEFAULT_MODEL = "sonnet"
+local DEFAULT_EFFORT = "medium"
 
 local STEER = {
     { id = "deeper", text = _("Go deeper"),
@@ -602,14 +606,14 @@ function ClaudeChat:addToMainMenu(menu_items)
             { text = _("New chat…"), keep_menu_open = false, callback = function() self:askNewChat() end },
             { text = _("Chats"), callback = function() self:showChats() end },
             {
-                text_func = function() return T(_("Model: %1"), config().model or "sonnet") end,
+                text_func = function() return T(_("Model: %1"), config().model or DEFAULT_MODEL) end,
                 sub_item_table_func = function()
                     local items = {}
                     for _, m in ipairs(MODELS) do
                         table.insert(items, {
                             text = m.text,
                             radio = true,
-                            checked_func = function() return (config().model or "sonnet") == m.id end,
+                            checked_func = function() return (config().model or DEFAULT_MODEL) == m.id end,
                             callback = function()
                                 local cfg = config()
                                 cfg.model = m.id
@@ -697,42 +701,74 @@ function ClaudeChat:open()
     UIManager:show(dialog)
 end
 
--- Asks for text with the on-screen keyboard, then calls on_text(text). Starts from text, or else from the
--- last typed question that never got an answer.
-function ClaudeChat:prompt(title, on_text, text)
+-- A row of toggles: a grey label, then one button per option; tapping one ticks it and unticks the rest.
+local function choiceRow(label, options, choice, key, dialog_ref)
+    local row = { { text = label, enabled = false, width = Screen:scaleBySize(70), font_size = 16 } }
+    for _, o in ipairs(options) do
+        table.insert(row, {
+            id = key .. "_" .. o.id,
+            text = o.text,
+            checked_func = function() return choice[key] == o.id end,
+            callback = function()
+                choice[key] = o.id
+                for _, other in ipairs(options) do
+                    local button = dialog_ref.dialog.button_table:getButtonById(key .. "_" .. other.id)
+                    if other.id ~= o.id and button then
+                        button.label_widget:setText(button:getDisplayText())
+                        button:refresh()
+                    end
+                end
+            end,
+        })
+    end
+    return row
+end
+
+-- Asks for text with the on-screen keyboard, then calls on_text(text, choice) with the picked model and effort.
+-- Starts from text, or else from the last typed question that never got an answer.
+function ClaudeChat:prompt(title, on_text, text, choice)
+    local cfg = config()
+    choice = choice or { model = cfg.model or DEFAULT_MODEL, effort = cfg.effort or DEFAULT_EFFORT }
+    local ref = {}
     local dialog
     dialog = InputDialog:new{
         title = title,
-        input = text or config().unsent,
+        input = text or cfg.unsent,
         input_hint = _("Your question"),
         allow_newline = true,
         -- A fixed two-line box: one that grows line by line jumps around and repaints as you type.
         text_height = 2 * math.floor(1.3 * Font:getFace("x_smallinfofont").size + 0.5),
-        buttons = {{
-            { text = _("Cancel"), id = "close", callback = function() UIManager:close(dialog) end },
-            { text = _("Send"), is_enter_default = true, callback = function()
-                local text = util.trim(dialog:getInputText())
-                UIManager:close(dialog)
-                if text ~= "" then on_text(text) end
-            end },
-        }},
+        buttons = {
+            choiceRow(_("Model"), MODELS, choice, "model", ref),
+            choiceRow(_("Effort"), EFFORTS, choice, "effort", ref),
+            {
+                { text = _("Cancel"), id = "close", callback = function() UIManager:close(dialog) end },
+                { text = _("Send"), is_enter_default = true, callback = function()
+                    local typed = util.trim(dialog:getInputText())
+                    UIManager:close(dialog)
+                    if typed ~= "" then on_text(typed, choice) end
+                end },
+            },
+        },
     }
+    ref.dialog = dialog
     UIManager:show(dialog)
     dialog:onShowKeyboard()
 end
 
 function ClaudeChat:askNewChat()
-    self:prompt(_("New chat"), function(text) self:startChat(shorten(text, 70), text) end)
+    self:prompt(_("New chat"), function(text, choice) self:startChat(shorten(text, 70), text, nil, choice) end)
 end
 
-function ClaudeChat:startChat(title, prompt, label)
+function ClaudeChat:startChat(title, prompt, label, choice)
     local file = string.format("%s/%s %s.html", chatsDir(), os.date("%Y-%m-%d %H%M"),
         util.getSafeFilename(shorten(title, 40)))
-    self:send(file, { title = title, turns = {} }, prompt, label)
+    self:send(file, { title = title, turns = {} }, prompt, label, choice)
 end
 
--- Sends prompt in chat, saves the reply into file and opens it at the new question.
-function ClaudeChat:send(file, chat, prompt, label)
+-- Sends prompt in chat, saves the reply into file and opens it at the new question. choice (model, effort)
+-- overrides the defaults for this question only.
+function ClaudeChat:send(file, chat, prompt, label, choice)
     local cfg = config()
     if not cfg.host or not cfg.key then
         UIManager:show(InfoMessage:new{ text = _("Not paired with the Mac. On the Mac run:\nrelay.py pair") })
@@ -745,7 +781,7 @@ function ClaudeChat:send(file, chat, prompt, label)
         G_reader_settings:flush()
     end
     NetworkMgr:runWhenOnline(function()
-        self:streamReply(file, chat, prompt, label, cfg)
+        self:streamReply(file, chat, prompt, label, cfg, choice)
     end)
 end
 
@@ -787,14 +823,16 @@ function ClaudeChat:openChatView(file)
 end
 
 -- Fetches the reply in a forked subprocess (the UI never blocks) and shows it live; on the last line saves it.
-function ClaudeChat:streamReply(file, chat, prompt, label, cfg)
-    local payload = { prompt = prompt, session_id = chat.session_id, model = cfg.model or "sonnet",
-                      effort = cfg.effort, opening = cfg.opening }
+function ClaudeChat:streamReply(file, chat, prompt, label, cfg, choice)
+    choice = choice or {}
+    local payload = { prompt = prompt, session_id = chat.session_id,
+                      model = choice.model or cfg.model or DEFAULT_MODEL,
+                      effort = choice.effort or cfg.effort or DEFAULT_EFFORT, opening = cfg.opening }
     local pid, fd = ffiutil.runInSubProcess(function(_, write_fd)
         streamFromRelay(cfg, payload, write_fd)
     end, true)
     if not pid then
-        self:showSendFailed(_("Could not start the request."), file, chat, prompt, label)
+        self:showSendFailed(_("Could not start the request."), file, chat, prompt, label, choice)
         return
     end
     local view = self:showChatView(file, chat)
@@ -844,7 +882,7 @@ function ClaudeChat:streamReply(file, chat, prompt, label, cfg)
             stop()
         end
         result = result or { error = _("The connection dropped before Claude finished.") }
-        local saved = self:saveReply(result, file, chat, prompt, label)
+        local saved = self:saveReply(result, file, chat, prompt, label, choice)
         view:endPending()
         if not saved and view:exchangeCount() == 0 then self:closeChatView() end
     end
@@ -852,9 +890,9 @@ function ClaudeChat:streamReply(file, chat, prompt, label, cfg)
 end
 
 -- Saves the reply into the chat; on failure shows why and returns false.
-function ClaudeChat:saveReply(res, file, chat, prompt, label)
+function ClaudeChat:saveReply(res, file, chat, prompt, label, choice)
     if res.error or not res.html then
-        self:showSendFailed(tostring(res.error or _("Empty answer.")), file, chat, prompt, label)
+        self:showSendFailed(tostring(res.error or _("Empty answer.")), file, chat, prompt, label, choice)
         return false
     end
     local done = config()
@@ -873,19 +911,20 @@ function ClaudeChat:saveReply(res, file, chat, prompt, label)
     return true
 end
 
-function ClaudeChat:showSendFailed(err, file, chat, prompt, label)
+function ClaudeChat:showSendFailed(err, file, chat, prompt, label, choice)
     local dialog
     local buttons = {{
         { text = _("Close"), callback = function() UIManager:close(dialog) end },
         { text = _("Retry"), callback = function()
             UIManager:close(dialog)
-            self:send(file, chat, prompt, label)
+            self:send(file, chat, prompt, label, choice)
         end },
     }}
     if not label then
         table.insert(buttons[1], 2, { text = _("Edit"), callback = function()
             UIManager:close(dialog)
-            self:prompt(_("Edit question"), function(text) self:send(file, chat, text) end, prompt)
+            self:prompt(_("Edit question"), function(text, picked) self:send(file, chat, text, nil, picked) end,
+                prompt, choice)
         end })
     end
     dialog = ButtonDialog:new{
@@ -909,28 +948,28 @@ function ClaudeChat:openChat(file, anchor)
 end
 
 -- Continues the open chat, or starts a new one when the open book is not a chat.
-function ClaudeChat:continueOrStart(prompt, label)
+function ClaudeChat:continueOrStart(prompt, label, choice)
     local file = self.ui.document.file
     local chat = loadChat(file)
     if chat then
-        self:send(file, chat, prompt, label)
+        self:send(file, chat, prompt, label, choice)
         return
     end
     local title = self.ui.doc_props and self.ui.doc_props.display_title or ""
-    self:startChat(label, prompt .. (title ~= "" and T("\n\n(From the book \"%1\".)", title) or ""), label)
+    self:startChat(label, prompt .. (title ~= "" and T("\n\n(From the book \"%1\".)", title) or ""), label, choice)
 end
 
 -- From the chat view (view given) or from a claude: link in the open book.
 function ClaudeChat:onSteer(id, view)
-    local continue = function(prompt, label)
+    local continue = function(prompt, label, choice)
         if view then
-            self:send(view.file, view.chat, prompt, label)
+            self:send(view.file, view.chat, prompt, label, choice)
         else
-            self:continueOrStart(prompt, label)
+            self:continueOrStart(prompt, label, choice)
         end
     end
     if id == "ask" then
-        self:prompt(_("Ask"), function(text) continue(text) end)
+        self:prompt(_("Ask"), function(text, choice) continue(text, nil, choice) end)
         return
     end
     if id == "new" then
