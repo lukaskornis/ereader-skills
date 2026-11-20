@@ -26,7 +26,7 @@ Chat with Claude from the reader on the Claude subscription. Each chat is one HT
 - The plugin: copy `claudechat.koplugin` to `<koreader>/plugins/`, restart KOReader.
 
 ## Pitfalls
-- Open bug (2026-11-20): opening the question box over the chat view shows a stale book-status screen ("beamforming wifi") behind the dialog instead of the chat. An InfoMessage over the view is fine, so it is the InputDialog/keyboard path.
+- A stale screen (another book's status page) behind the question box came from widgets orphaned by repeated plugin reloads, not from the chat view: it never shows after `ink -d kobo restart`. Restart before judging repaint bugs.
 - The Mac must be awake and on the same Wi-Fi. A DHCP change on the Mac needs `relay.py pair` again.
 - `JSON.decode(s:gsub(...))` passes gsub's count as a second argument and fails silently: assign the gsub result to a local first (2026-11-18).
 - Closing the reader with `ui:onClose()` from `ink eval` when no file manager is underneath quits KOReader, and the Kobo drops off Wi-Fi (2026-11-18).
