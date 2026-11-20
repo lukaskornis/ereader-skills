@@ -763,6 +763,10 @@ function ShelfWidget:buildApps()
         table.insert(row, self:appTile(size, "typography", "Writer", function() self.ui.typewriter:open() end))
         table.insert(row, HorizontalSpan:new{ width = gap })
     end
+    if self.ui.minesweeper then
+        table.insert(row, self:appTile(size, "bomb", "Mines", function() self.ui.minesweeper:open() end))
+        table.insert(row, HorizontalSpan:new{ width = gap })
+    end
     table.insert(row, self:appTile(size, NetworkMgr:isWifiOn() and "wifi" or "wifi-off", "Wi-Fi",
         function() self:toggleWifi() end))
     table.insert(row, HorizontalSpan:new{ width = gap })
