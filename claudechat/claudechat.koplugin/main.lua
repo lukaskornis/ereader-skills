@@ -116,7 +116,7 @@ end
 local CONTENT_CSS = [[
 table { border-collapse: collapse; margin: 0.8em 0; }
 th, td { border: 1px solid black; padding: 0.2em 0.5em; text-align: left; vertical-align: top; }
-img, svg { max-width: 100%; }
+img { max-width: 100%; }
 img { display: block; margin: 0.8em auto; }
 ]]
 
@@ -269,11 +269,12 @@ local function partialHtml(html)
     return html
 end
 
--- MuPDF's default page margin is about an inch, and it sizes an svg by its width attribute, ignoring percentages.
+-- MuPDF's default page margin is about an inch. It squeezes a figure into whatever room is left on its page, so
+-- figures move whole to the next page instead.
 local VIEW_CSS = [[
 @page { margin: 0; }
 body { margin: 0; }
-svg { width: 100%; }
+div.figure { page-break-inside: avoid; }
 h2 { font-size: 1em; font-style: italic; font-weight: normal; margin: 0 0 1em; padding-bottom: 0.5em;
      border-bottom: 1px solid #888; }
 h3 { font-variant: small-caps; }
@@ -505,6 +506,24 @@ function ChatView:exchangeCount()
     return math.floor(#self.chat.turns / 2)
 end
 
+-- MuPDF sizes an svg by its width and height attributes alone, so a viewBox-only diagram comes out tiny: give it
+-- the full text width in pixels and the height its viewBox implies, kept within one page.
+function ChatView:fitSvg(tag)
+    local _, _, vb_w, vb_h = tag:match("viewBox%s*=%s*\\?[\"']%s*([%d.-]+)[%s,]+([%d.-]+)[%s,]+([%d.]+)[%s,]+([%d.]+)")
+    for _, attr in ipairs({ "width", "height" }) do
+        tag = tag:gsub("%s" .. attr .. "%s*=%s*\\?([\"'])[^\"']*\\?%1", "")
+    end
+    vb_w, vb_h = tonumber(vb_w), tonumber(vb_h)
+    if not vb_w or vb_w <= 0 or not vb_h or vb_h <= 0 then return tag end
+    local width = self.body_width
+    local height = width * vb_h / vb_w
+    local max_height = 0.8 * self.body_height
+    if height > max_height then
+        width, height = width * max_height / height, max_height
+    end
+    return (tag:gsub("^<svg", string.format('<svg width="%d" height="%d"', width, height)))
+end
+
 -- Question i with its reply; the one being written (past the saved ones) shows the text so far.
 function ChatView:exchangeHtml(i)
     local question, reply
@@ -516,12 +535,9 @@ function ChatView:exchangeHtml(i)
         reply = self.pending.html ~= "" and partialHtml(self.pending.html)
             or '<p class="thinking">' .. _("Thinking") .. string.rep(".", self.pending.dots) .. "</p>"
     end
-    reply = reply:gsub("<svg[^>]*>", function(tag)
-        for _, attr in ipairs({ "width", "height" }) do
-            tag = tag:gsub("%s" .. attr .. "%s*=%s*([\"'])[^\"']*%1", "")
-        end
-        return tag
-    end)
+    reply = reply:gsub("<svg[^>]*>", function(tag) return self:fitSvg(tag) end)
+        :gsub("<svg.-</svg>", '<div class="figure">%0</div>')
+        :gsub("<img[^>]*>", '<div class="figure">%0</div>')
     local follow = (i == self:exchangeCount() and not self.pending) and followHtml() or ""
     return "<h2>" .. escape(question) .. "</h2>" .. reply .. follow
 end
