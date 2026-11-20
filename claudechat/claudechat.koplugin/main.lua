@@ -1,19 +1,22 @@
 --[[
-Claude chat: each conversation is one HTML file in <home>/Claude, opened in the normal reader so it reads like
-a book (fonts, margins, page turns, TOC of questions). The file carries its own state (session id, turns) in a
-leading comment, so it survives moves and renames.
+Claude chat: each conversation is one HTML file in <home>/Claude, shown in a full-screen chat view (one question
+and its reply at a time, steering buttons below) and also readable as a book (fonts, margins, TOC of questions).
+The file carries its own state (session id, turns) in a leading comment, so it survives moves and renames.
 Replies come from the Mac relay (claudechat/relay.py), which runs `claude -p` on the subscription, and are shown
 live as Claude writes them.
-Steering links at the end of the file use the claude: scheme and are caught before ReaderLink treats them as
+In the book, steering links at the end use the claude: scheme and are caught before ReaderLink treats them as
 external. Selecting text adds Claude buttons to the highlight dialog: in a chat they continue it, in any other
 book they start a new chat about the passage.
 ]]
 local Blitbuffer = require("ffi/blitbuffer")
 local ButtonDialog = require("ui/widget/buttondialog")
+local ButtonTable = require("ui/widget/buttontable")
 local DataStorage = require("datastorage")
 local Device = require("device")
+local Font = require("ui/font")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
+local GestureRange = require("ui/gesturerange")
 local InfoMessage = require("ui/widget/infomessage")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local InputDialog = require("ui/widget/inputdialog")
@@ -94,6 +97,14 @@ local function escape(text)
     return (text:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub('"', "&quot;"))
 end
 
+-- Shared by the book and the chat view: what Claude may use besides prose.
+local CONTENT_CSS = [[
+table { border-collapse: collapse; margin: 0.8em 0; }
+th, td { border: 1px solid black; padding: 0.2em 0.5em; text-align: left; vertical-align: top; }
+img, svg { max-width: 100%; }
+img { display: block; margin: 0.8em auto; }
+]]
+
 local function shorten(text, max)
     text = util.cleanupSelectedText(text):gsub("%s+", " ")
     if #text <= max then return text end
@@ -128,7 +139,7 @@ p { text-indent: 0; margin: 0 0 0.7em; text-align: justify; }
 blockquote { margin: 0.6em 1.5em; font-style: italic; }
 p.steer { text-align: center; margin-top: 2.5em; line-height: 2.2; text-indent: 0; page-break-inside: avoid; }
 p.steer a { text-decoration: none; font-weight: bold; white-space: nowrap; hyphens: none; }
-</style></head><body>]])
+]] .. CONTENT_CSS .. [[</style></head><body>]])
     table.insert(out, "<h1>" .. escape(chat.title) .. "</h1>")
     for i, turn in ipairs(chat.turns) do
         if turn.role == "user" then
@@ -229,76 +240,237 @@ local function readAvailable(fd)
     return got > 0 and ffi.string(buffer, got) or ""
 end
 
--- A half-written reply: drop a code fence Claude may open with and a tag cut off mid-name.
+-- A half-written reply: drop a code fence Claude may open with, a tag cut off mid-name, web images (the relay
+-- embeds them at the end) and a diagram still being drawn.
 local function partialHtml(html)
-    return (html:gsub("^%s*```%w*%s*", ""):gsub("<[^>]*$", ""))
+    html = html:gsub("^%s*```%w*%s*", "")
+    html = html:gsub("<[^>]*$", "")
+    html = html:gsub("<img[^>]-https?://[^>]*>", "")
+    local last_svg
+    for pos in html:gmatch("()<svg") do last_svg = pos end
+    if last_svg and not html:find("</svg>", last_svg, true) then
+        html = html:sub(1, last_svg - 1)
+    end
+    return html
 end
 
-local LIVE_CSS = "p { margin: 0 0 0.7em; text-align: justify; } h3 { font-variant: small-caps; }"
-    .. " blockquote { margin: 0.6em 1.5em; font-style: italic; }"
+-- MuPDF's default page margin is about an inch, and it sizes an svg by its width attribute, ignoring percentages.
+local VIEW_CSS = [[
+@page { margin: 0; }
+body { margin: 0; }
+svg { width: 100%; }
+h2 { font-size: 1em; font-style: italic; font-weight: normal; margin: 0 0 1em; padding-bottom: 0.5em;
+     border-bottom: 1px solid #888; }
+h3 { font-variant: small-caps; }
+p { margin: 0 0 0.7em; text-align: justify; }
+p.thinking { font-style: italic; }
+blockquote { margin: 0.6em 1.5em; font-style: italic; }
+]] .. CONTENT_CSS
 
--- Full-screen page that shows the reply while Claude writes it. Closing it cancels; once the reply is in,
--- closing opens it as a book.
-local LiveReply = InputContainer:extend{
-    title = nil,
+-- Full-screen chat: one question and its reply at a time, steering buttons below. Page turns run through a reply
+-- and on into the next or previous one. While Claude writes, the new reply grows in place without ever moving the
+-- page being read.
+local ChatView = InputContainer:extend{
+    chat = nil,
+    on_steer = nil, -- function(id)
+    on_book = nil, -- function(exchange)
     on_close = nil,
+    covers_fullscreen = true,
 }
 
-function LiveReply:init()
+function ChatView:init()
     local width, height = Screen:getWidth(), Screen:getHeight()
     self.dimen = Geom:new{ x = 0, y = 0, w = width, h = height }
     self.title_bar = TitleBar:new{
         width = width,
-        title = self.title,
-        subtitle = _("Claude is writing…"),
+        title = self.chat.title,
+        subtitle = " ",
         with_bottom_line = true,
+        left_icon = "book.opened",
+        left_icon_tap_callback = function()
+            if not self.pending then self.on_book(self.index) end
+        end,
         show_parent = self,
         close_callback = function() self.on_close() end,
     }
+    self.buttons = self:newButtons(width)
     self.padding = Size.padding.large
     self.body_width = width - 2 * self.padding
-    self.body_height = height - self.title_bar:getHeight() - 2 * self.padding
+    self.body_height = height - self.title_bar:getHeight() - self.buttons:getSize().h - 2 * self.padding
     self.body = FrameContainer:new{ bordersize = 0, padding = self.padding, self:newScroll("") }
     self[1] = FrameContainer:new{
         background = Blitbuffer.COLOR_WHITE,
         bordersize = 0,
         padding = 0,
-        VerticalGroup:new{ align = "left", self.title_bar, self.body },
+        VerticalGroup:new{ align = "left", self.title_bar, self.body, self.buttons },
     }
+    -- Reached only when the reply itself cannot turn further, or for sideways swipes it ignores.
+    self.ges_events = {
+        TurnSwipe = { GestureRange:new{ ges = "swipe", range = function() return self.body.dimen end } },
+        TurnTap = { GestureRange:new{ ges = "tap", range = function() return self.body.dimen end } },
+    }
+    self.key_events = {
+        TurnForward = { { Device.input.group.PgFwd } },
+        TurnBack = { { Device.input.group.PgBack } },
+    }
+    self.index = self:exchangeCount()
 end
 
-function LiveReply:newScroll(html)
+function ChatView:newButtons(width)
+    local function button(id, text)
+        return { text = text, enabled_func = function() return not self.pending end,
+                 callback = function() self.on_steer(id) end }
+    end
+    local row1, row2 = {}, {}
+    for i, s in ipairs(STEER) do
+        table.insert(i <= 4 and row1 or row2, button(s.id, s.text))
+    end
+    table.insert(row2, button("ask", _("Ask…")))
+    table.insert(row2, button("new", _("New chat")))
+    return ButtonTable:new{ width = width, buttons = { row1, row2 }, zero_sep = true, show_parent = self }
+end
+
+function ChatView:newScroll(html)
     return ScrollHtmlWidget:new{
         html_body = html,
-        css = LIVE_CSS,
+        css = VIEW_CSS,
         width = self.body_width,
         height = self.body_height,
         dialog = self,
     }
 end
 
--- Shows the reply so far without moving the reader: they stay on their page, and only that page is
--- repainted when the new text lands on it; otherwise just the scroll bar grows.
-function LiveReply:setHtml(html)
+function ChatView:exchangeCount()
+    return math.floor(#self.chat.turns / 2)
+end
+
+-- Question i with its reply; the one being written (past the saved ones) shows the text so far.
+function ChatView:exchangeHtml(i)
+    local question, reply
+    if i <= self:exchangeCount() then
+        local user = self.chat.turns[2 * i - 1]
+        question, reply = user.label or user.text, self.chat.turns[2 * i].html
+    else
+        question = self.pending.question
+        reply = self.pending.html ~= "" and partialHtml(self.pending.html)
+            or '<p class="thinking">' .. _("Thinking") .. string.rep(".", self.pending.dots) .. "</p>"
+    end
+    reply = reply:gsub("<svg[^>]*>", function(tag)
+        for _, attr in ipairs({ "width", "height" }) do
+            tag = tag:gsub("%s" .. attr .. "%s*=%s*([\"'])[^\"']*%1", "")
+        end
+        return tag
+    end)
+    return "<h2>" .. escape(question) .. "</h2>" .. reply
+end
+
+function ChatView:lastIndex()
+    return self:exchangeCount() + (self.pending and 1 or 0)
+end
+
+function ChatView:updateSubtitle()
+    local text
+    if self.pending and self.index == self:lastIndex() then
+        text = _("Claude is writing…")
+    elseif self:lastIndex() > 1 then
+        text = T(_("%1 of %2"), self.index, self:lastIndex())
+    else
+        text = " "
+    end
+    if text ~= self.subtitle then
+        self.subtitle = text
+        self.title_bar:setSubTitle(text)
+    end
+end
+
+-- Shows exchange i at its first page, or at its last when paging back into it.
+function ChatView:show(i, at_end)
+    self.index = i
     local old = self.body[1]
-    local page, was_last = old.htmlbox_widget.page_number, old.htmlbox_widget.page_number == old.htmlbox_widget.page_count
-    local scroll = self:newScroll(html)
+    local scroll = self:newScroll(self:exchangeHtml(i))
+    if at_end then
+        scroll.htmlbox_widget:setPageNumber(scroll.htmlbox_widget.page_count)
+        scroll:_updateScrollBar()
+    end
+    self.body[1] = scroll
+    old:free()
+    self:updateSubtitle()
+    UIManager:setDirty(self, function() return "ui", self.body.dimen end)
+end
+
+-- Re-renders the exchange in view keeping the reader on their page: only that page is repainted when new text
+-- lands on it; otherwise just the scroll bar grows.
+function ChatView:refresh()
+    local old = self.body[1]
+    local box = old.htmlbox_widget
+    local page, was_last = box.page_number, box.page_number == box.page_count
+    local scroll = self:newScroll(self:exchangeHtml(self.index))
     scroll.htmlbox_widget:setPageNumber(math.min(page, scroll.htmlbox_widget.page_count))
     scroll:_updateScrollBar()
     self.body[1] = scroll
     old:free()
-    if was_last then
-        UIManager:setDirty(self, function() return "ui", self.body.dimen end)
-    else
-        UIManager:setDirty(self, function() return "ui", old.v_scroll_bar.dimen end)
+    local area = was_last and self.body.dimen or old.v_scroll_bar.dimen
+    UIManager:setDirty(self, function() return "ui", area end)
+end
+
+function ChatView:turn(direction)
+    local box = self.body[1].htmlbox_widget
+    if direction > 0 and box.page_number < box.page_count or direction < 0 and box.page_number > 1 then
+        self.body[1]:scrollText(direction)
+        return true
     end
+    local next_index = self.index + direction
+    if next_index >= 1 and next_index <= self:lastIndex() then
+        self:show(next_index, direction < 0)
+    end
+    return true
 end
 
-function LiveReply:setDone(text)
-    self.title_bar:setSubTitle(text)
+function ChatView:onTurnSwipe(_, ges)
+    local forward = { west = 1, north = 1, east = -1, south = -1 }
+    return self:turn(forward[ges.direction] or 0)
 end
 
-function LiveReply:onCloseWidget()
+function ChatView:onTurnTap(_, ges)
+    return self:turn(ges.pos.x < Screen:getWidth() / 2 and -1 or 1)
+end
+
+function ChatView:onTurnForward() return self:turn(1) end
+function ChatView:onTurnBack() return self:turn(-1) end
+
+function ChatView:repaintButtons()
+    UIManager:setDirty(self, function() return "ui", self.buttons.dimen end)
+end
+
+-- A new question goes out: it gets its own exchange, shown at once with "Thinking" until text arrives.
+function ChatView:beginPending(question)
+    self.pending = { question = question, html = "", dots = 1 }
+    self:show(self:lastIndex())
+    self:repaintButtons()
+end
+
+function ChatView:updatePending(html, dots)
+    if html ~= "" then dots = self.pending.dots end
+    if html == self.pending.html and dots == self.pending.dots then return end
+    self.pending.html, self.pending.dots = html, dots
+    if self.index == self:lastIndex() then self:refresh() end
+end
+
+-- The reply was saved into the chat (or failed): the exchange stays in view either way, as saved text or gone.
+function ChatView:endPending()
+    local was_live = self.index == self:lastIndex()
+    self.pending = nil
+    self:repaintButtons()
+    if self:exchangeCount() == 0 then return end
+    if was_live and self.index <= self:exchangeCount() then
+        self:refresh()
+    else
+        self:show(math.min(self.index, self:exchangeCount()))
+    end
+    self:updateSubtitle()
+end
+
+function ChatView:onCloseWidget()
     self.body[1]:free()
 end
 
@@ -401,7 +573,7 @@ function ClaudeChat:open()
         local state = loadChat(chat.path)
         table.insert(buttons, {{ text = state and state.title or chat.name, align = "left", callback = function()
             UIManager:close(dialog)
-            require("apps/reader/readerui"):showReader(chat.path)
+            self:openChatView(chat.path)
         end }})
     end
     if #chats > RECENT_CHATS then
@@ -423,8 +595,8 @@ function ClaudeChat:prompt(title, on_text, text)
         input = text or config().unsent,
         input_hint = _("Your question"),
         allow_newline = true,
-        -- A fixed box: one that grows line by line jumps around and repaints as you type.
-        use_available_height = true,
+        -- A fixed two-line box: one that grows line by line jumps around and repaints as you type.
+        text_height = 2 * math.floor(1.3 * Font:getFace("x_smallinfofont").size + 0.5),
         buttons = {{
             { text = _("Cancel"), id = "close", callback = function() UIManager:close(dialog) end },
             { text = _("Send"), is_enter_default = true, callback = function()
@@ -466,6 +638,43 @@ function ClaudeChat:send(file, chat, prompt, label)
     end)
 end
 
+-- The chat view for file, opened if it is not already up.
+function ClaudeChat:showChatView(file, chat)
+    if self.view and self.view.file == file then return self.view end
+    if self.view then self:closeChatView() end
+    local view
+    view = ChatView:new{
+        chat = chat,
+        on_steer = function(id) self:onSteer(id, view) end,
+        on_book = function(exchange)
+            self:closeChatView()
+            self:openChat(file, "t" .. (2 * exchange - 1))
+        end,
+        on_close = function() self:closeChatView() end,
+    }
+    view.file = file
+    self.view = view
+    if view:exchangeCount() > 0 then view:show(view.index) end
+    UIManager:show(view, "full")
+    return view
+end
+
+function ClaudeChat:closeChatView()
+    if not self.view then return end
+    if self.cancel then self.cancel() end
+    UIManager:close(self.view)
+    self.view = nil
+end
+
+function ClaudeChat:openChatView(file)
+    local chat = loadChat(file)
+    if not chat then
+        require("apps/reader/readerui"):showReader(file)
+        return
+    end
+    self:showChatView(file, chat)
+end
+
 -- Fetches the reply in a forked subprocess (the UI never blocks) and shows it live; on the last line saves it.
 function ClaudeChat:streamReply(file, chat, prompt, label, cfg)
     local payload = { prompt = prompt, session_id = chat.session_id, model = cfg.model or "sonnet" }
@@ -476,8 +685,10 @@ function ClaudeChat:streamReply(file, chat, prompt, label, cfg)
         self:showSendFailed(_("Could not start the request."), file, chat, prompt, label)
         return
     end
-    local live, tick
-    local pending, html, result = "", "", nil
+    local view = self:showChatView(file, chat)
+    view:beginPending(label or shorten(prompt, 120))
+    local tick
+    local pending, html, result, ticks = "", "", nil, 0
     local function reap()
         if not ffiutil.isSubProcessDone(pid) then UIManager:scheduleIn(1, reap) end
     end
@@ -491,27 +702,17 @@ function ClaudeChat:streamReply(file, chat, prompt, label, cfg)
             result = obj
         end
     end
-    local finished = false
     local function stop()
+        self.cancel = nil
         UIManager:unschedule(tick)
         ffiutil.terminateSubProcess(pid)
         ffi.C.close(fd)
         reap()
     end
-    live = LiveReply:new{
-        title = label or shorten(prompt, 70),
-        on_close = function()
-            UIManager:close(live)
-            if finished then
-                self:openChat(file, "t" .. (#chat.turns - 1))
-                return
-            end
-            stop()
-        end,
-    }
+    self.cancel = stop
     tick = function()
+        ticks = ticks + 1
         local done = ffiutil.isSubProcessDone(pid)
-        local before = #html
         pending = pending .. (done and ffiutil.readAllFromFD(fd) or readAvailable(fd))
         for line in pending:gmatch("([^\n]*)\n") do
             take(line)
@@ -519,22 +720,22 @@ function ClaudeChat:streamReply(file, chat, prompt, label, cfg)
         pending = pending:match("[^\n]*$")
         if done and pending ~= "" then take(pending) end
         if result and result.html then html = result.html end
-        if #html > before or (result and result.html) then live:setHtml(partialHtml(html)) end
+        -- "Thinking" gains a dot each second until the first words arrive.
+        view:updatePending(html, 1 + math.floor(ticks * LIVE_REFRESH_S))
         if not done and not result then
             UIManager:scheduleIn(LIVE_REFRESH_S, tick)
             return
         end
-        if not done then stop() end
-        result = result or { error = _("The connection dropped before Claude finished.") }
-        if not self:saveReply(result, file, chat, prompt, label) then
-            UIManager:close(live)
-            return
+        if done then
+            self.cancel = nil
+        else
+            stop()
         end
-        -- The reader may be mid-page; the book opens only when they close this page.
-        finished = true
-        live:setDone(_("Done · close to open it as a book"))
+        result = result or { error = _("The connection dropped before Claude finished.") }
+        local saved = self:saveReply(result, file, chat, prompt, label)
+        view:endPending()
+        if not saved and view:exchangeCount() == 0 then self:closeChatView() end
     end
-    UIManager:show(live, "ui")
     UIManager:scheduleIn(LIVE_REFRESH_S, tick)
 end
 
@@ -605,9 +806,17 @@ function ClaudeChat:continueOrStart(prompt, label)
     self:startChat(label, prompt .. (title ~= "" and T("\n\n(From the book \"%1\".)", title) or ""), label)
 end
 
-function ClaudeChat:onSteer(id)
+-- From the chat view (view given) or from a claude: link in the open book.
+function ClaudeChat:onSteer(id, view)
+    local continue = function(prompt, label)
+        if view then
+            self:send(view.file, view.chat, prompt, label)
+        else
+            self:continueOrStart(prompt, label)
+        end
+    end
     if id == "ask" then
-        self:prompt(_("Ask"), function(text) self:continueOrStart(text) end)
+        self:prompt(_("Ask"), function(text) continue(text) end)
         return
     end
     if id == "new" then
@@ -616,7 +825,7 @@ function ClaudeChat:onSteer(id)
     end
     for _, s in ipairs(STEER) do
         if s.id == id then
-            self:continueOrStart(s.prompt, s.text)
+            continue(s.prompt, s.text)
             return
         end
     end

@@ -8,6 +8,7 @@ subscription token and returns the reply as an HTML fragment, whole (POST /chat)
   relay.py install          LaunchAgent (starts at login, restarts on crash) + pair every reader
   relay.py pair [DEVICE]    tell a reader the relay address and key (ink eval)
 """
+import base64
 import getpass
 import json
 import os
@@ -20,6 +21,8 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 8787
@@ -39,10 +42,12 @@ LOG = os.path.expanduser("~/Library/Logs/claudechat-relay.log")
 MODELS = {"sonnet", "opus", "haiku"}
 TIMEOUT_S = 600
 
-SYSTEM_PROMPT = """You are a thoughtful companion whose replies are read on an e-ink reader, like pages of a well-edited book.
+SYSTEM_PROMPT = """You are a thoughtful companion whose replies are read on a black-and-white e-ink reader, like pages of a well-edited book.
 Write flowing, warm, precise prose: real paragraphs, a clear line of thought, concrete images and examples.
-Output an HTML fragment only, using just these tags: p, em, strong, h3, ul, ol, li, blockquote.
-No markdown, no tables, no code blocks unless explicitly asked, no images, no emoji, no preamble like "Great question".
+Output an HTML fragment only, using just these tags: p, em, strong, h3, ul, ol, li, blockquote, table, tr, th, td, img, svg and SVG shapes.
+Use a table when comparing several things along the same dimensions. Use an inline svg diagram (a landscape viewBox about 400 units wide, no width or height attributes, black and grey strokes and fills, text font-size at least 14 in viewBox units, no scripts) when a picture explains it better than words: a mechanism, a shape, a timeline, a graph.
+Use img only for a real photo or painting at a URL you are certain exists, preferably on upload.wikimedia.org; add alt text. Never invent URLs.
+No markdown, no code blocks unless explicitly asked, no emoji, no preamble like "Great question".
 Do not end with offers or questions such as "Would you like..."; the reader has buttons for that.
 Aim for about 250 to 600 words unless the request calls for less."""
 
@@ -103,10 +108,64 @@ def claude_cmd(prompt, session_id, model, output_format):
     return cmd, env
 
 
+IMG = re.compile(r"""<img\b[^>]*?\bsrc=["'](https?://[^"']+)["'][^>]*>""", re.I)
+IMG_MAX_BYTES = 8 * 1024 * 1024
+IMG_TIMEOUT_S = 8
+# Wider than any reader screen; JPEG keeps the chat file small.
+IMG_MAX_PX = 1200
+
+
+# Wikimedia only serves a few thumbnail widths; the original behind a thumb URL always exists.
+WIKI_THUMB = re.compile(r"^(https://upload\.wikimedia\.org/wikipedia/[^/]+)/thumb(/[0-9a-f]/[0-9a-f]{2}/[^/]+)/[^/]+$")
+
+
+def download(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "claudechat-relay/1.0 (e-reader chat)"})
+    try:
+        with urllib.request.urlopen(req, timeout=IMG_TIMEOUT_S) as resp:
+            return resp.headers.get_content_type(), resp.read(IMG_MAX_BYTES + 1)
+    except (OSError, ValueError):
+        return None, b""
+
+
+def fetch_image(url):
+    """The image at url as a data: URI the reader can show offline, or None."""
+    mime, body = download(url)
+    thumb = WIKI_THUMB.match(url)
+    if not mime and thumb:
+        mime, body = download(thumb.group(1) + thumb.group(2))
+    if not mime:
+        return None
+    if not mime.startswith("image/") or len(body) > IMG_MAX_BYTES:
+        return None
+    if mime != "image/svg+xml":
+        with tempfile.TemporaryDirectory() as tmp:
+            src, out = os.path.join(tmp, "in"), os.path.join(tmp, "out.jpg")
+            with open(src, "wb") as f:
+                f.write(body)
+            done = subprocess.run(["sips", "-Z", str(IMG_MAX_PX), "-s", "format", "jpeg",
+                                   "-s", "formatOptions", "70", src, "--out", out], capture_output=True)
+            if done.returncode != 0 or not os.path.exists(out):
+                return None
+            with open(out, "rb") as f:
+                body, mime = f.read(), "image/jpeg"
+    return f"data:{mime};base64,{base64.b64encode(body).decode()}"
+
+
+def inline_images(html):
+    """The reader is offline from the web: images are fetched here and embedded; ones that fail are dropped."""
+    urls = list(dict.fromkeys(IMG.findall(html)))
+    if not urls:
+        return html
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        found = dict(zip(urls, pool.map(fetch_image, urls)))
+    return IMG.sub(lambda m: m.group(0).replace(m.group(1), found[m.group(1)]) if found[m.group(1)] else "", html)
+
+
 def finish(data):
     if data.get("is_error"):
         return {"error": str(data.get("result") or data.get("terminal_reason"))[:400]}
-    return {"session_id": data.get("session_id"), "html": FENCE.sub("", data.get("result") or "")}
+    return {"session_id": data.get("session_id"), "html": inline_images(FENCE.sub("", data.get("result") or ""))}
 
 
 def ask_claude(prompt, session_id, model):
