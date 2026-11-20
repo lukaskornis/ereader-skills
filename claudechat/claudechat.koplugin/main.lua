@@ -321,6 +321,27 @@ local function shown(cfg, key)
     return cfg[key] ~= false
 end
 
+-- Up or down along a side edge runs what the reader's Gestures plugin has there (frontlight and warmth by
+-- default); full-screen windows otherwise swallow those swipes before the reader sees them. The dispatched events
+-- go to the top widget only, so the window lends them to the reader's UI while they run.
+local function edgeSlide(window, ges)
+    if ges.ges ~= "swipe" or (ges.direction ~= "north" and ges.direction ~= "south") then return false end
+    local ui = require("apps/reader/readerui").instance or require("apps/filemanager/filemanager").instance
+    local gestures = ui and ui.gestures and ui.gestures.data and ui.gestures.data.gesture_reader
+    if not gestures then return false end
+    local w = Screen:getWidth()
+    local left = G_defaults:readSetting("DSWIPE_ZONE_LEFT_EDGE")
+    local right = G_defaults:readSetting("DSWIPE_ZONE_RIGHT_EDGE")
+    local side = ges.pos.x < w * (left.x + left.w) and "left" or ges.pos.x >= w * right.x and "right"
+    if not side then return false end
+    local actions = gestures["one_finger_swipe_" .. side .. "_edge_" .. (ges.direction == "north" and "up" or "down")]
+    if not actions then return false end
+    window.active_widgets = { ui }
+    require("dispatcher"):execute(actions, { gesture = ges })
+    window.active_widgets = nil
+    return true
+end
+
 -- A gear left of the title bar's close button; TitleBar itself holds one icon per side. Inserted first, it gets
 -- taps before the close button's wide tap zone.
 local function addGear(title_bar, callback)
@@ -416,7 +437,10 @@ function ChatView:paintTo(bb, x, y)
 end
 
 function ChatView:handleEvent(event)
-    if self.header_shown and event.handler == "onGesture" and self.header:handleEvent(event) then return true end
+    if event.handler == "onGesture" then
+        if self.header_shown and self.header:handleEvent(event) then return true end
+        if edgeSlide(self, event.args[1]) then return true end
+    end
     return InputContainer.handleEvent(self, event)
 end
 
@@ -794,6 +818,7 @@ function ChatsWindow:onTap(_, ges)
 end
 
 function ChatsWindow:onSwipe(_, ges)
+    if edgeSlide(self, ges) then return true end
     local step = ({ west = 1, east = -1 })[ges.direction]
     if step then
         self.page = self.page + step
