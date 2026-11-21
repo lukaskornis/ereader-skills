@@ -46,14 +46,17 @@ CONTEXT_WINDOW = {}
 DEFAULT_WINDOW = 1_000_000
 TIMEOUT_S = 600
 
-SYSTEM_PROMPT = """You are a thoughtful companion whose replies are read on a black-and-white e-ink reader, like pages of a well-edited book.
+PROMPT_BASE = """You are a thoughtful companion whose replies are read on a black-and-white e-ink reader, like pages of a well-edited book.
 Write flowing, warm, precise prose: real paragraphs, a clear line of thought, concrete images and examples.
 Output an HTML fragment only, using just these tags: p, em, strong, h3, ul, ol, li, blockquote, table, tr, th, td, img, svg and SVG shapes.
 Use a table when comparing several things along the same dimensions. Use an inline svg diagram (a landscape viewBox about 400 units wide, no width or height attributes, black and grey strokes and fills, text font-size at least 14 in viewBox units, no scripts) when a picture explains it better than words: a mechanism, a shape, a timeline, a graph.
 Use img only for a real photo or painting at a URL you are certain exists, preferably on upload.wikimedia.org; add alt text. Never invent URLs.
 No markdown, no code blocks unless explicitly asked, no emoji, no preamble like "Great question".
 Do not end with offers or questions such as "Would you like..."; the reader has buttons for that.
-Aim for about 250 to 600 words unless the request calls for less."""
+"""
+SYSTEM_PROMPT = PROMPT_BASE + "Aim for about 250 to 600 words unless the request calls for less."
+# Long Send on the reader asks for this instead.
+LONG_SYSTEM_PROMPT = PROMPT_BASE + "Write an in-depth article of about 2,000 to 5,000 words, organised under h3 headings: go well past a summary into background, how it works, examples, nuances and open questions."
 
 
 def die(msg):
@@ -98,13 +101,13 @@ NO_TOKEN = "No subscription token on the Mac. Run: relay.py login"
 TOO_SLOW = "Claude took longer than 10 minutes."
 
 
-def claude_cmd(prompt, session_id, model, effort, output_format):
+def claude_cmd(prompt, session_id, model, effort, system, output_format):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE", "ANTHROPIC"))}
     # A separate config dir alone still loads ~/.claude/CLAUDE.md and rules; these switch that off.
     env.update(CLAUDE_CONFIG_DIR=CLAUDE_HOME, CLAUDE_CODE_OAUTH_TOKEN=read_token(),
                CLAUDE_CODE_DISABLE_CLAUDE_MDS="1", CLAUDE_CODE_DISABLE_AUTO_MEMORY="1")
     cmd = [claude_bin(), "-p", prompt, "--model", model, "--output-format", output_format,
-           "--tools", "", "--system-prompt", SYSTEM_PROMPT]
+           "--tools", "", "--system-prompt", system]
     if effort:
         cmd += ["--effort", effort]
     if output_format == "stream-json":
@@ -188,10 +191,10 @@ def learn_windows(result):
             CONTEXT_WINDOW[name] = info["contextWindow"]
 
 
-def ask_claude(prompt, session_id, model, effort):
+def ask_claude(prompt, session_id, model, effort, system):
     if not read_token():
         return {"error": NO_TOKEN}
-    cmd, env = claude_cmd(prompt, session_id, model, effort, "json")
+    cmd, env = claude_cmd(prompt, session_id, model, effort, system, "json")
     try:
         out = subprocess.run(cmd, cwd=WORK_DIR, env=env, capture_output=True, text=True,
                              timeout=TIMEOUT_S, stdin=subprocess.DEVNULL)
@@ -205,13 +208,13 @@ def ask_claude(prompt, session_id, model, effort):
     return finish(data)
 
 
-def stream_claude(prompt, session_id, model, effort, emit):
+def stream_claude(prompt, session_id, model, effort, system, emit):
     """Calls emit({"delta": text}) as Claude writes, then emit() once more with the reply or an error.
     The reply carries usage: context tokens and window, and the 5-hour limit used (0 to 1) when known.
     emit raising (the reader hung up) stops Claude."""
     if not read_token():
         return emit({"error": NO_TOKEN})
-    cmd, env = claude_cmd(prompt, session_id, model, effort, "stream-json")
+    cmd, env = claude_cmd(prompt, session_id, model, effort, system, "stream-json")
     proc = subprocess.Popen(cmd, cwd=WORK_DIR, env=env, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     timer = threading.Timer(TIMEOUT_S, proc.kill)
@@ -306,6 +309,7 @@ class Handler(BaseHTTPRequestHandler):
         prompt = (req.get("prompt") or "").strip()
         model = req.get("model") if req.get("model") in MODELS else "sonnet"
         effort = req.get("effort") if req.get("effort") in EFFORTS else None
+        system = LONG_SYSTEM_PROMPT if req.get("length") == "long" else SYSTEM_PROMPT
         if not prompt:
             return self.reply(400, {"error": "empty prompt"})
         opening = (req.get("opening") or "").strip()
@@ -313,7 +317,7 @@ class Handler(BaseHTTPRequestHandler):
         if opening and not req.get("session_id"):
             prompt = f"{opening}\n\n{prompt}"
         if self.path == "/chat":
-            result = ask_claude(prompt, req.get("session_id"), model, effort)
+            result = ask_claude(prompt, req.get("session_id"), model, effort, system)
             return self.reply(502 if "error" in result else 200, result)
         # One JSON object per line, flushed as Claude writes; the connection closes after the last one.
         self.send_response(200)
@@ -325,7 +329,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(obj).encode() + b"\n")
             self.wfile.flush()
         try:
-            stream_claude(prompt, req.get("session_id"), model, effort, emit)
+            stream_claude(prompt, req.get("session_id"), model, effort, system, emit)
         except (BrokenPipeError, ConnectionResetError):
             self.log_message("reader hung up, Claude stopped")
 

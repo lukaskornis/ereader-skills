@@ -100,6 +100,14 @@ local function saveConfig(cfg)
     G_reader_settings:saveSetting("claudechat", cfg)
 end
 
+-- A reader paired with 127.0.0.1 runs its own relay; start.sh does nothing when it already runs.
+local LOCAL_START = "/mnt/onboard/.adds/claudechat/start.sh"
+local function startLocalRelay()
+    local host = config().host
+    if not host or host:sub(1, 10) ~= "127.0.0.1:" then return end
+    os.execute("sh " .. LOCAL_START .. " >/dev/null 2>&1 &")
+end
+
 local function chatsDir()
     local home = G_reader_settings:readSetting("home_dir") or require("device").home_dir or DataStorage:getDataDir()
     local dir = home .. "/Claude"
@@ -1039,6 +1047,7 @@ function SettingsPane:onTap(_, ges)
 end
 
 function ClaudeChat:init()
+    startLocalRelay()
     self.ui.menu:registerToMainMenu(self)
     if not self.ui.document then return end
     self:addHighlightButtons()
@@ -1195,13 +1204,20 @@ local function choiceRow(label, options, choice, key, dialog_ref)
     return row
 end
 
--- Asks for text with the on-screen keyboard, then calls on_text(text, choice) with the picked model and effort.
+-- Asks for text with the on-screen keyboard, then calls on_text(text, choice) with the picked model, effort and length.
 -- Starts from text, or else from the last typed question that never got an answer.
 function ClaudeChat:prompt(title, on_text, text, choice)
     local cfg = config()
     choice = choice or { model = cfg.model or DEFAULT_MODEL, effort = cfg.effort or DEFAULT_EFFORT }
     local ref = {}
     local dialog
+    -- length "long" asks for an in-depth article instead of a short reply; Retry and Edit keep it.
+    local function send(length)
+        local typed = util.trim(dialog:getInputText())
+        UIManager:close(dialog)
+        choice.length = length
+        if typed ~= "" then on_text(typed, choice) end
+    end
     dialog = InputDialog:new{
         title = title,
         input = text or cfg.unsent,
@@ -1214,11 +1230,8 @@ function ClaudeChat:prompt(title, on_text, text, choice)
             choiceRow(_("Effort"), EFFORTS, choice, "effort", ref),
             {
                 { text = _("Cancel"), id = "close", callback = function() UIManager:close(dialog) end },
-                { text = _("Send"), is_enter_default = true, callback = function()
-                    local typed = util.trim(dialog:getInputText())
-                    UIManager:close(dialog)
-                    if typed ~= "" then on_text(typed, choice) end
-                end },
+                { text = _("Send"), is_enter_default = true, callback = function() send(nil) end },
+                { text = _("Long Send"), callback = function() send("long") end },
             },
         },
     }
@@ -1240,6 +1253,7 @@ end
 -- Sends prompt in chat, saves the reply into file and opens it at the new question. choice (model, effort)
 -- overrides the defaults for this question only.
 function ClaudeChat:send(file, chat, prompt, label, choice)
+    startLocalRelay()
     local cfg = config()
     if not cfg.host or not cfg.key then
         UIManager:show(InfoMessage:new{ text = _("Not paired with the Mac. On the Mac run:\nrelay.py pair") })
@@ -1302,7 +1316,8 @@ function ClaudeChat:streamReply(file, chat, prompt, label, cfg, choice)
     choice = choice or {}
     local payload = { prompt = prompt, session_id = chat.session_id,
                       model = choice.model or cfg.model or DEFAULT_MODEL,
-                      effort = choice.effort or cfg.effort or DEFAULT_EFFORT, opening = cfg.opening }
+                      effort = choice.effort or cfg.effort or DEFAULT_EFFORT, opening = cfg.opening,
+                      length = choice.length }
     local pid, fd = ffiutil.runInSubProcess(function(_, write_fd)
         streamFromRelay(cfg, payload, write_fd)
     end, true)
