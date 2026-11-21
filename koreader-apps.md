@@ -68,3 +68,5 @@ Learned from three apps built in one day: Claude chat, Word search, Paint. Read 
 ## Mac helpers
 - A LaunchAgent can't read `~/Documents`: `install` copies the script to `~/.local/bin` and the agent runs that copy.
 - `claude setup-token` headless: Python `pty.fork()` fed by a FIFO (`script -q` fails on a socket). Its token wraps across lines: after stripping newlines, cut at "Store" and check the length. A 401 with a token that looks fine means glued text.
+- SVG on the device goes through NanoSVG: `clipPath` is ignored and its shape is filled black. Clip in the generator instead, and check vector art rendered on the device before approval (sleep screen eye, 2026-11-21).
+- Drive dialogs in checks with `ink eval` calling a button's `callback`; blind taps after a widget closes land on the library and open books.
