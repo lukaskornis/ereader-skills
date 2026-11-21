@@ -132,6 +132,7 @@ local function paintPicture(bb, file, x, y, size)
         height = size,
         scale_factor = not svg and 0 or nil,
         file_do_cache = false,
+        alpha = true, -- transparent pictures blend onto the white page instead of black
     }
     local sz = img:getSize()
     img:paintTo(bb, x + math.floor((size - sz.w) / 2), y + math.floor((size - sz.h) / 2))
@@ -339,19 +340,29 @@ function SleepQuote:open()
             text = _("Choose\u{2026}"),
             callback = function()
                 UIManager:close(dialog)
+                local function choose(path)
+                    G_reader_settings:saveSetting(PICTURE_FILE_KEY, path)
+                    G_reader_settings:makeTrue(PICTURE_KEY)
+                    G_reader_settings:flush()
+                    self:open()
+                end
                 UIManager:show(PathChooser:new{
                     title = _("Sleep picture"),
+                    -- KOReader's chooser wants a long press on files; a tap picks the picture here.
+                    onMenuSelect = function(chooser, item)
+                        if lfs.attributes(item.path, "mode") ~= "file" then
+                            return PathChooser.onMenuSelect(chooser, item)
+                        end
+                        UIManager:close(chooser)
+                        choose(item.path)
+                        return true
+                    end,
                     select_directory = false,
                     select_file = true,
                     detailed_file_info = false,
                     file_filter = isImage,
-                    path = custom and custom:match("^(.*)/") or G_reader_settings:readSetting("home_dir") or "/",
-                    onConfirm = function(path)
-                        G_reader_settings:saveSetting(PICTURE_FILE_KEY, path)
-                        G_reader_settings:makeTrue(PICTURE_KEY)
-                        G_reader_settings:flush()
-                        self:open()
-                    end,
+                    path = custom and custom:match("^(.*)/") or G_reader_settings:readSetting("home_dir") or Device.home_dir or "/",
+                    onConfirm = choose,
                 })
             end,
         },
