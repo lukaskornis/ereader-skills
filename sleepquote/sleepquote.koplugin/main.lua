@@ -142,13 +142,17 @@ end
 function SleepQuoteWidget:paintTo(bb, x, y)
     local w, h = self.dimen.w, self.dimen.h
     bb:paintRect(x, y, w, h, WHITE)
-
+    self:paintBody(bb, x, y, w, h)
+    -- Battery last: the picture's white margins may reach the corner.
     if self.battery then
         local bface = face("NotoSerif-Regular.ttf", h * 0.0235)
         local pct = self.battery .. "%"
         RenderText:renderUtf8Text(bb, x + w - math.floor(w * 0.046) - textWidth(bface, pct),
             y + math.floor(h * 0.043), bface, pct, true, false, GRAY)
     end
+end
+
+function SleepQuoteWidget:paintBody(bb, x, y, w, h)
 
     local margin = math.floor(w * 0.1)
     local box_w = w - 2 * margin
@@ -159,18 +163,18 @@ function SleepQuoteWidget:paintTo(bb, x, y)
 
     local qbox, pic_size
     if self.quote and self.picture then
-        -- Picture as large as the mock (68% of the width), smaller only when a long quote needs room.
-        local rule_gap = math.floor(h * 0.032)
-        for _, frac in ipairs({ 0.684, 0.56, 0.44 }) do
+        -- Picture nearly full width, smaller only when a long quote needs room.
+        local rule_gap = math.floor(h * 0.022)
+        for _, frac in ipairs({ 0.92, 0.8, 0.684, 0.56, 0.44 }) do
             pic_size = math.floor(w * frac)
-            local band_h = h - math.floor(h * 0.08) - pic_size - 2 * rule_gap - math.floor(h * 0.06)
+            local band_h = h - math.floor(h * 0.03) - pic_size - 2 * rule_gap - math.floor(h * 0.06)
             qbox = fitQuote(self.quote.text, box_w, band_h, title_block, h)
             if qbox then break end
         end
         if not qbox then
             self.picture = nil
         else
-            local top = y + math.floor(h * 0.08)
+            local top = y + math.floor(h * 0.03)
             paintPicture(bb, self.picture, x + math.floor((w - pic_size) / 2), top, pic_size)
             local rule_y = top + pic_size + rule_gap
             local rule_w = math.floor(w * 0.2)
@@ -183,7 +187,7 @@ function SleepQuoteWidget:paintTo(bb, x, y)
     end
 
     if self.picture then
-        local size = math.floor(w * 0.8)
+        local size = w
         paintPicture(bb, self.picture, x + math.floor((w - size) / 2), y + math.floor((h - size) / 2), size)
         return
     end

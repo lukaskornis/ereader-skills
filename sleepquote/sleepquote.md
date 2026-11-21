@@ -6,10 +6,10 @@ space to the others. Works on any KOReader device; the battery hides itself wher
 `Device:hasBattery()` is false.
 
 ## Layout
-- All on: picture at the top (68% of the width), a thin rule, the quote in Noto Serif Italic, the
+- All on: picture at the top (92% of the width), a thin rule, the quote in Noto Serif Italic, the
   title in grey Noto Serif, battery percent small top-right. The quote takes the largest size from
   3.6% down to 1.8% of the screen height that fits; a quote too long even then shrinks the picture.
-- Picture only (or no highlight found): picture centred at 80% of the width.
+- Picture only (or no highlight found): picture centred, full width. Battery paints last, over the picture's white margin.
 - Quote only: quote and title centred on the page.
 - Default picture `eye.png`: Lukas's eye-in-seed-of-life picture, 800x800, converted losslessly
   from his WebP (stock image, faint watermark swirls included). Custom pictures (png, jpg, gif,
