@@ -11,10 +11,9 @@ space to the others. Works on any KOReader device; the battery hides itself wher
   3.6% down to 1.8% of the screen height that fits; a quote too long even then shrinks the picture.
 - Picture only (or no highlight found): picture centred at 80% of the width.
 - Quote only: quote and title centred on the page.
-- Default picture `eye.svg`, traced from Lukas's eye-in-seed-of-life picture by `mock/eye.py`.
-  KOReader's NanoSVG ignores `clipPath` and fills the clip shape black, so the iris is clipped to
-  the lids in Python. Custom pictures (png, jpg, gif, svg, webp, bmp) scale to fit, keeping their
-  aspect; transparency blends onto white.
+- Default picture `eye.png`: Lukas's eye-in-seed-of-life picture, 800x800, converted losslessly
+  from his WebP (stock image, faint watermark swirls included). Custom pictures (png, jpg, gif,
+  svg, webp, bmp) scale to fit, keeping their aspect; transparency blends onto white.
 
 ## How it works
 - Wraps `Screensaver.show` once (guarded by `Screensaver._sleepquote_orig_show`, so `ink reload`
@@ -46,6 +45,8 @@ On 2026-11-18 the Kobo had none in either place.
 
 ## Verified (Kobo Aura One)
 - 2026-11-18: real suspend path (`Screensaver:setup(); show()`) painted and closed cleanly.
+- KOReader's NanoSVG ignores `clipPath` and fills its shape black (why the first redrawn eye
+  came out solid); `mock/eye.py` clips in Python.
 - 2026-11-21: all-on, long quote, quote-only, picture-only and custom-picture renders; Choose, tap
   to pick and Reset; real suspend path with the new screen; balance state survives a settings save
   and reload with quotes, brackets and non-ASCII in keys.

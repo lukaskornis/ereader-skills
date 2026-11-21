@@ -220,7 +220,7 @@ local SleepQuote = WidgetContainer:extend{
 local function pictureFile()
     local file = G_reader_settings:readSetting(PICTURE_FILE_KEY)
     if file and lfs.attributes(file, "mode") == "file" then return file end
-    return DIR .. "eye.svg"
+    return DIR .. "eye.png"
 end
 
 function SleepQuote.buildWidget()
