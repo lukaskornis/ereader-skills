@@ -85,9 +85,4 @@ function M.remember(shown, key)
     return shown
 end
 
-function M.dateLine(t, osdate)
-    osdate = osdate or os.date
-    return "Last held on " .. osdate("%b", t) .. " " .. tonumber(osdate("%d", t))
-end
-
 return M

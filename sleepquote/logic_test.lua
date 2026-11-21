@@ -66,5 +66,4 @@ local shown = {}
 for i = 1, L.MEMORY + 50 do L.remember(shown, "k" .. i) end
 assert(#shown == L.MEMORY and shown[1] == "k" .. (L.MEMORY + 50))
 
-assert(L.dateLine(os.time({ year = 2026, month = 9, day = 5, hour = 12 })) == "Last held on Sep 5")
 print("sleepquote logic ok")
