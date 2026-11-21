@@ -16,9 +16,10 @@ hides itself where `Device:hasBattery()` is false.
   highlights first; once all are seen, a random pick from its older half, so the last one never
   comes back next. A book with a single highlight falls through to older books. The "shown" memory
   is `G_reader_settings.sleepquote_shown` (keys, newest first, 300 max).
-- Quote font: Noto Serif, largest size from 3.6% down to 1.8% of the screen height that fits.
+- Quote font: Noto Sans, largest size from 3.6% down to 1.8% of the screen height that fits.
 
 ## Settings
+- Shelf Apps tile "Sleep": On/Off and Preview (shows the next sleep screen; tap to close).
 - Menu: Settings > Screen > "Sleep screen: highlight" (on by default, `sleepquote_enabled`).
 
 ## Only KOReader highlights

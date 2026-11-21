@@ -4,6 +4,9 @@ from the current book (else recently read books), never the same one twice in a 
 It wraps Screensaver.show for plain suspends; power-off and reboot screens stay KOReader's own.
 ]]
 local Blitbuffer = require("ffi/blitbuffer")
+local ButtonDialog = require("ui/widget/buttondialog")
+local GestureRange = require("ui/gesturerange")
+local InputContainer = require("ui/widget/container/inputcontainer")
 local bit = require("bit")
 local Device = require("device")
 local DocSettings = require("docsettings")
@@ -134,7 +137,7 @@ function SleepQuoteWidget:paintTo(bb, x, y)
 
     if not self.quote then return end
 
-    -- Quote: serif, as large as fits the middle band, title under it.
+    -- Quote: sans, as large as fits the middle band, title under it.
     local margin = math.floor(w * 0.1)
     local box_w = w - 2 * margin
     local band_top, band_h = math.floor(h * 0.14), math.floor(h * 0.74)
@@ -147,7 +150,7 @@ function SleepQuoteWidget:paintTo(bb, x, y)
         if qbox then qbox:free() end
         qbox = TextBoxWidget:new{
             text = "\u{201C}" .. self.quote.text .. "\u{201D}",
-            face = face("NotoSerif-Regular.ttf", px),
+            face = face("NotoSans-Regular.ttf", px),
             width = box_w,
             alignment = "center",
             line_height = 0.35,
@@ -237,6 +240,50 @@ end
 function SleepQuote:init()
     math.randomseed(os.time())
     self.ui.menu:registerToMainMenu(self)
+end
+
+local PreviewWidget = InputContainer:extend{ name = "SleepQuotePreview" }
+
+function PreviewWidget:init()
+    self.dimen = Geom:new{ x = 0, y = 0, w = Screen:getWidth(), h = Screen:getHeight() }
+    self.ges_events.Tap = { GestureRange:new{ ges = "tap", range = self.dimen } }
+    self[1] = SleepQuote.buildWidget()
+end
+
+function PreviewWidget:onTap()
+    UIManager:close(self, "full")
+    return true
+end
+
+function PreviewWidget:onShow()
+    UIManager:setDirty(self, "full")
+end
+
+-- Shelf Apps tile: on/off and a preview of the next sleep screen.
+function SleepQuote:open()
+    local dialog
+    local on = G_reader_settings:nilOrTrue(ENABLED_KEY)
+    dialog = ButtonDialog:new{
+        title = _("Sleep screen: date, battery and a highlight"),
+        buttons = {
+            { {
+                text = on and _("On  \u{2713}") or _("Off"),
+                callback = function()
+                    G_reader_settings:flipNilOrTrue(ENABLED_KEY)
+                    G_reader_settings:flush()
+                    UIManager:close(dialog)
+                    self:open()
+                end,
+            }, {
+                text = _("Preview"),
+                callback = function()
+                    UIManager:close(dialog)
+                    UIManager:show(PreviewWidget:new{})
+                end,
+            } },
+        },
+    }
+    UIManager:show(dialog)
 end
 
 function SleepQuote:addToMainMenu(menu_items)
