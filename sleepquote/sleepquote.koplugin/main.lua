@@ -32,7 +32,7 @@ local DIR = debug.getinfo(1, "S").source:match("^@(.*/)")
 local Logic = dofile(DIR .. "logic.lua")
 
 local ENABLED_KEY = "sleepquote_enabled"
-local SHOWN_KEY = "sleepquote_shown"
+local BALANCE_KEY = "sleepquote_balance"
 local PICTURE_KEY = "sleepquote_picture"
 local PICTURE_FILE_KEY = "sleepquote_picture_file"
 local HIGHLIGHT_KEY = "sleepquote_highlight"
@@ -225,11 +225,9 @@ end
 function SleepQuote.buildWidget()
     local entry
     if G_reader_settings:nilOrTrue(HIGHLIGHT_KEY) then
-        local shown = G_reader_settings:readSetting(SHOWN_KEY) or {}
-        entry = Logic.pick(collectBooks(), shown, math.random)
-        if entry then
-            G_reader_settings:saveSetting(SHOWN_KEY, Logic.remember(shown, entry.key))
-        end
+        local state = G_reader_settings:readSetting(BALANCE_KEY) or {}
+        entry = Logic.pick(collectBooks(), state)
+        if entry then G_reader_settings:saveSetting(BALANCE_KEY, state) end
     end
     local powerd = G_reader_settings:nilOrTrue(BATTERY_KEY) and Device:hasBattery() and Device:getPowerDevice()
     return SleepQuoteWidget:new{
@@ -289,7 +287,7 @@ if not Screensaver._sleepquote_orig_show then
 end
 
 function SleepQuote:init()
-    math.randomseed(os.time())
+    G_reader_settings:delSetting("sleepquote_shown") -- memory of the old random picker
     self.ui.menu:registerToMainMenu(self)
 end
 

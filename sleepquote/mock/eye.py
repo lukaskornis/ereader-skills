@@ -27,7 +27,8 @@ dots = [p(R, 90 + 60 * k) for k in range(6)] + [p(R * math.sqrt(3), 60 * k) for 
 for x, y in dots:
     o.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="7.5" fill="#000" stroke="none"/>')
 
-# Eye: a white almond hides the geometry behind it; the iris is clipped by the lids.
+# Eye: a white almond hides the geometry behind it. The iris fits inside the lids with no clipPath:
+# KOReader's NanoSVG ignores clipPath and fills its shape black.
 L, Rt, cy = 268, 532, 404
 almond = f"M{L} {cy} Q400 290 {Rt} {cy} Q400 500 {L} {cy} Z"
 o.append(f'<path d="{almond}" fill="#fff" stroke="none"/>')
@@ -37,18 +38,17 @@ o.append(f'<path d="M{L - 10} {cy - 2} Q{L - 30} {cy + 4} {L - 40} {cy + 2}" str
 o.append(f'<path d="M{Rt + 10} {cy - 2} Q{Rt + 30} {cy + 4} {Rt + 40} {cy + 2}" stroke-width="4" fill="none"/>')
 o.append(f'<path d="M{L + 8} {cy + 6} Q400 498 {Rt - 8} {cy + 6}" stroke-width="3.5" fill="none"/>')
 o.append(f'<path d="M{L + 44} {cy + 14} Q400 478 {Rt - 44} {cy + 14}" stroke-width="1.4" fill="none"/>')
-o.append(f'<clipPath id="lid"><path d="{almond}"/></clipPath>')
 ic = (400, 400)
-g = [f'<circle cx="{ic[0]}" cy="{ic[1]}" r="58" fill="#000" stroke="none"/>']
-for rr in (52, 45, 38):
+g = [f'<circle cx="{ic[0]}" cy="{ic[1]}" r="48" fill="#000" stroke="none"/>']
+for rr in (43, 37, 31):
     g.append(f'<circle cx="{ic[0]}" cy="{ic[1]}" r="{rr}" stroke="#fff" stroke-width="1.2" fill="none"/>')
 for k in range(28):
     a = k * math.pi / 14
-    g.append(f'<line x1="{ic[0] + 27 * math.cos(a):.1f}" y1="{ic[1] + 27 * math.sin(a):.1f}" '
-             f'x2="{ic[0] + 54 * math.cos(a):.1f}" y2="{ic[1] + 54 * math.sin(a):.1f}" stroke="#fff" stroke-width="0.9"/>')
-g.append(f'<circle cx="{ic[0]}" cy="{ic[1]}" r="23" fill="#000" stroke="none"/>')
-g.append(f'<circle cx="{ic[0] + 16}" cy="{ic[1] - 18}" r="11" fill="#fff" stroke="none"/>')
-o.append('<g clip-path="url(#lid)">' + "".join(g) + "</g>")
+    g.append(f'<line x1="{ic[0] + 22 * math.cos(a):.1f}" y1="{ic[1] + 22 * math.sin(a):.1f}" '
+             f'x2="{ic[0] + 45 * math.cos(a):.1f}" y2="{ic[1] + 45 * math.sin(a):.1f}" stroke="#fff" stroke-width="0.9"/>')
+g.append(f'<circle cx="{ic[0]}" cy="{ic[1]}" r="19" fill="#000" stroke="none"/>')
+g.append(f'<circle cx="{ic[0] + 13}" cy="{ic[1] - 15}" r="9" fill="#fff" stroke="none"/>')
+o.extend(g)
 
 svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" width="800" height="800">'
        '<rect width="800" height="800" fill="#fff"/><g stroke="#000" stroke-linecap="round">' + "".join(o) + "</g></svg>")

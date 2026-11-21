@@ -1,11 +1,10 @@
 --[[
-Sleep quote logic, no KOReader requires: cleans highlight text, picks one highlight, keeps the
-"shown" memory. Books come in priority order (current book first, then recently read ones).
+Sleep screen logic, no KOReader requires: cleans highlight text and picks one highlight per sleep.
+Books come in recency order (current book first, then recently read ones).
 ]]
 local M = {}
 
 M.MAX_CHARS = 420
-M.MEMORY = 300
 
 function M.clean(text)
     if type(text) ~= "string" then return nil end
@@ -21,68 +20,60 @@ function M.key(file, text)
     return (file:match("[^/]+$") or file) .. "|" .. text:sub(1, 120)
 end
 
--- Position of key in the shown list, 1 = shown last; nil = never (or forgotten).
-local function age(shown, key)
-    for i = 1, #shown do
-        if shown[i] == key then return i end
-    end
-end
-
-local function entries(book)
-    local list = {}
-    for _, text in ipairs(book.highlights) do
-        list[#list + 1] = { file = book.file, title = book.title, text = text, key = M.key(book.file, text) }
-    end
-    return list
-end
-
-local function fresh(list, shown)
-    local out = {}
-    for _, e in ipairs(list) do
-        if not age(shown, e.key) then out[#out + 1] = e end
-    end
-    return out
-end
-
--- Random pick among the older half, so the one shown last never comes back next.
-local function oldest(list, shown, rng)
-    table.sort(list, function(a, b)
-        local x, y = age(shown, a.key) or math.huge, age(shown, b.key) or math.huge
-        if x ~= y then return x > y end
-        return a.key < b.key
-    end)
-    return list[rng(math.ceil(#list / 2))]
-end
-
---- books: { {file, title, highlights = {text…}}, … } in priority order.
---- shown: keys, most recent first. rng(n) returns 1..n.
-function M.pick(books, shown, rng)
-    local pools = {}
+--- Balanced pick, no randomness: books[r] weighs 1/r (newest first), split evenly over its
+--- highlights. Each sleep every highlight earns its share as credit; the one with the most credit
+--- is shown and pays 1 (smooth weighted round robin), so a highlight's frequency tracks its share
+--- and a new highlight joins level with the current leader, so it comes up next instead of
+--- catching up on years of history.
+--- Ties go to the one shown longest ago; the previous one is skipped whenever another exists.
+--- books: { {file, title, highlights = {text…}}, … } in recency order.
+--- state: { credit = {key=n}, seen = {key=seq}, seq = n, prev = key }, updated in place.
+function M.pick(books, state)
+    local list, weights, total = {}, {}, 0
+    local rank = 0
     for _, b in ipairs(books) do
-        if #b.highlights > 0 then pools[#pools + 1] = entries(b) end
+        if #b.highlights > 0 then
+            rank = rank + 1
+            total = total + 1 / rank
+            for _, text in ipairs(b.highlights) do
+                list[#list + 1] = { file = b.file, title = b.title, text = text, key = M.key(b.file, text) }
+                weights[#list] = 1 / rank / #b.highlights
+            end
+        end
     end
-    if #pools == 0 then return nil end
+    if #list == 0 then return nil end
 
-    for _, pool in ipairs(pools) do
-        local f = fresh(pool, shown)
-        if #f > 0 then return f[rng(#f)] end
-        if #pool >= 2 then return oldest(pool, shown, rng) end
+    local old_credit, old_seen = state.credit or {}, state.seen or {}
+    local credit, seen = {}, {}
+    local start = 0
+    for _, e in ipairs(list) do
+        start = math.max(start, old_credit[e.key] or 0)
     end
-    local all = {}
-    for _, pool in ipairs(pools) do
-        for _, e in ipairs(pool) do all[#all + 1] = e end
+    local best
+    for i, e in ipairs(list) do
+        -- Two books can share a highlight text only by file name collision; first one wins.
+        if credit[e.key] == nil then
+            credit[e.key] = (old_credit[e.key] or start) + weights[i] / total
+            seen[e.key] = old_seen[e.key]
+            if e.key ~= state.prev or #list == 1 then
+                if not best then
+                    best = e
+                else
+                    local c, bc = credit[e.key], credit[best.key]
+                    if c > bc + 1e-9 or (c > bc - 1e-9 and (seen[e.key] or -1) < (seen[best.key] or -1)) then
+                        best = e
+                    end
+                end
+            end
+        end
     end
-    if #all == 1 then return all[1] end
-    return oldest(all, shown, rng)
-end
+    best = best or list[1]
 
-function M.remember(shown, key)
-    for i = #shown, 1, -1 do
-        if shown[i] == key then table.remove(shown, i) end
-    end
-    table.insert(shown, 1, key)
-    while #shown > M.MEMORY do table.remove(shown) end
-    return shown
+    credit[best.key] = credit[best.key] - 1
+    state.seq = (state.seq or 0) + 1
+    seen[best.key] = state.seq
+    state.credit, state.seen, state.prev = credit, seen, best.key
+    return best
 end
 
 return M
